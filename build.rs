@@ -11,6 +11,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=app.rc");
     println!("cargo:rerun-if-changed=assets/RustedGlass.ico");
+    println!("cargo:rerun-if-changed=assets/Tabler-LICENSE");
 
     let rustc = Command::new(env::var_os("RUSTC").expect("Cargo Rust compiler"))
         .arg("--version")

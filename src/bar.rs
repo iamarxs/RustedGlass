@@ -15,8 +15,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, GetWindowTextW, SendMessageW, BS_OWNERDRAW, HMENU,
-    WINDOW_STYLE, WM_MOUSEMOVE, WM_SETFONT, WS_CHILD, WS_DISABLED, WS_TABSTOP, WS_VISIBLE,
+    CreateWindowExW, DestroyWindow, SendMessageW, BS_OWNERDRAW, HMENU, WINDOW_STYLE, WM_MOUSEMOVE,
+    WM_SETFONT, WS_CHILD, WS_DISABLED, WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::config::Config;
@@ -99,6 +99,7 @@ pub fn action(id: usize) -> Option<Action> {
 /// Take the bar's buttons away. Done before a panel is opened so that its controls are the only
 /// children on the window, and whenever the bar is hidden.
 pub fn destroy() {
+    tooltip::destroy();
     let handles = BUTTONS.with(|stored| stored.replace(Vec::new()));
     for (_, _, _, _, handle) in handles {
         unsafe {
@@ -112,6 +113,9 @@ fn rebuild(hwnd: HWND, layout: &[(i32, i32, Item)]) {
     destroy();
     let HGDIOBJ(font) = crate::style::font();
     let instance = w32::instance();
+    if !layout.is_empty() {
+        tooltip::create(hwnd);
+    }
     for (index, (x, buttons, item)) in layout.iter().enumerate() {
         let text = w32::wide(&item.label);
         let mut style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32);
@@ -156,21 +160,24 @@ fn rebuild(hwnd: HWND, layout: &[(i32, i32, Item)]) {
                 handle,
             ))
         });
+        tooltip::add(hwnd, handle, text);
         unsafe { w32::invalidate(handle) };
     }
 }
 
 pub unsafe fn draw(lparam: LPARAM) -> bool {
     let item = unsafe { &*(lparam.0 as *const DRAWITEMSTRUCT) };
-    let checked = BUTTONS.with(|buttons| {
+    let button = BUTTONS.with(|buttons| {
         buttons.try_borrow().ok().and_then(|buttons| {
             buttons
                 .iter()
                 .find(|entry| entry.4 == item.hwndItem)
-                .map(|entry| entry.2)
+                .map(|entry| (entry.1, entry.2))
         })
     });
-    let Some(checked) = checked else { return false };
+    let Some((action, checked)) = button else {
+        return false;
+    };
     let rect = item.rcItem;
     let fill = if item.itemState.0 & ODS_SELECTED.0 != 0 {
         crate::style::PRESSED
@@ -179,10 +186,7 @@ pub unsafe fn draw(lparam: LPARAM) -> bool {
     } else {
         crate::style::CONTROL
     };
-    let mut text = [0u16; 96];
     unsafe {
-        let len = GetWindowTextW(item.hwndItem, &mut text) as usize;
-        let _ = windows::Win32::Graphics::Gdi::SelectObject(item.hDC, crate::style::font());
         w32::fill_rect(
             item.hDC,
             rect.left,
@@ -211,12 +215,7 @@ pub unsafe fn draw(lparam: LPARAM) -> bool {
         } else {
             COLORREF(0x00F3_F3F3)
         };
-        crate::style::label(
-            item.hDC,
-            (rect.left + 3, rect.top, rect.right - 3, rect.bottom),
-            &String::from_utf16_lossy(&text[..len]),
-            ink,
-        );
+        icons::draw(item.hDC, rect, action, fill, ink);
     }
     true
 }
@@ -246,3 +245,6 @@ unsafe extern "system" fn button_proc(
         DefSubclassProc(hwnd, msg, wparam, lparam)
     }
 }
+
+mod icons;
+mod tooltip;

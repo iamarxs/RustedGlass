@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "rustedglass"
-version = "1.0.0-alpha.1"
+version = "1.0.1"
 dependencies = [
  "image",
  "serde_json",

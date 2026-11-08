@@ -28,9 +28,9 @@ pub fn bar_items(state: &State, config: &Config) -> Vec<Item> {
             Item {
                 action: slideshow.action,
                 label: if slideshow.action == Action::StartSlideshow {
-                    "Play"
+                    "Start slideshow (F11)"
                 } else {
-                    "Stop"
+                    "Stop slideshow (F11)"
                 }
                 .into(),
                 enabled: slideshow.enabled,
@@ -41,7 +41,7 @@ pub fn bar_items(state: &State, config: &Config) -> Vec<Item> {
     for (index, mode) in zoom::MODES.iter().enumerate() {
         bar.push(Item {
             action: Action::ZoomMode(index),
-            label: format!("{} {}", char::from(mode.hotkey() as u8), mode.label()),
+            label: format!("{} ({})", mode.label(), char::from(mode.hotkey() as u8)),
             enabled: state.frame().is_some(),
             checked: state.active_zoom_mode() == *mode,
         });
@@ -52,10 +52,11 @@ pub fn bar_items(state: &State, config: &Config) -> Vec<Item> {
 /// Where each button is, and the action it triggers. Buttons past the window's right edge are
 /// left out: `shortcut: no scrolling in the bar, add one if the window is made narrow.`
 pub fn bar_layout(state: &State, config: &Config, width: i32) -> Vec<(i32, i32, Item)> {
+    const BUTTON_WIDTH: i32 = 34;
     let mut layout = Vec::new();
     let mut x = EDGE;
     for item in bar_items(state, config) {
-        let buttons = width_of(&item.label);
+        let buttons = BUTTON_WIDTH;
         if x + buttons > width - EDGE {
             break;
         }
@@ -63,10 +64,4 @@ pub fn bar_layout(state: &State, config: &Config, width: i32) -> Vec<(i32, i32, 
         x += buttons + EDGE;
     }
     layout
-}
-
-/// A button is as wide as its text, in the 8 pixel average of a 9 point UI font.
-/// `shortcut: measured text would need GetTextExtentPoint32W per label.`
-fn width_of(label: &str) -> i32 {
-    (label.chars().count() as i32) * 8 + 14
 }

@@ -78,3 +78,7 @@ Install [Rust and Cargo](https://rust-lang.org/tools/install/) with the `x86_64-
 ```
 
 Cargo downloads the pinned dependencies on the first build. The script writes the Windows x64 release executable to `build/RustedGlass.exe`. Run `cargo test --locked` to run the tests.
+
+## Icons used
+
+The app uses icons provided by [Tabler](https://tabler.io/icons) ([GitHub](https://github.com/tabler/tabler-icons))

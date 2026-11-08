@@ -87,19 +87,19 @@ pub const EDGE: i32 = 8;
 /// Menu command ids start here, so `WM_COMMAND` values cannot be confused with control ids.
 const MENU_BASE: usize = 1000;
 
-/// The buttons in the order they are drawn, with the text on them. The keys do the same things,
+/// The buttons in the order they are drawn, with their tooltip and accessible labels. The keys do the same things,
 /// so the buttons stay few: navigation, zoom, the zoom modes.
 const BAR: &[(Action, &str)] = &[
-    (Action::Settings, "Settings"),
-    (Action::ToggleToolBar, "Bar"),
-    (Action::ShowPlaylist, "List"),
-    (Action::Previous, "<"),
-    (Action::Next, ">"),
-    (Action::RandomOrder, "Shuffle"),
-    (Action::ToggleRepeat, "Repeat"),
-    (Action::ZoomIn, "+"),
-    (Action::ZoomOut, "-"),
-    (Action::FitOriginal, "Fit"),
+    (Action::Settings, "Settings (S)"),
+    (Action::ToggleToolBar, "Hide toolbar (T)"),
+    (Action::ShowPlaylist, "Playlist (L)"),
+    (Action::Previous, "Previous image (Left arrow)"),
+    (Action::Next, "Next image (Right arrow)"),
+    (Action::RandomOrder, "Shuffle (Ctrl+A)"),
+    (Action::ToggleRepeat, "Repeat slideshow"),
+    (Action::ZoomIn, "Zoom in (+)"),
+    (Action::ZoomOut, "Zoom out (-)"),
+    (Action::FitOriginal, "Show whole picture (0)"),
 ];
 
 /// Everything the menu offers. The keys are listed here too so a reader finds them in one place.

@@ -1,6 +1,6 @@
 [package]
 name = "rustedglass"
-version = "1.0.0-alpha.1"
+version = "1.0.1"
 edition = "2021"
 license = "MIT"
 description = "RustedGlass image viewer, made with Rust."
