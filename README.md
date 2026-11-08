@@ -1,5 +1,7 @@
 # RustedGlass
 
+![RustedGlass banner](assets/RustedGlass-Banner.png)
+
 RustedGlass is a fast, portable, Rust-based Windows image viewer that combines on-the-fly decoding with a lean memory footprint.
 
 ## Download
