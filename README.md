@@ -2,6 +2,10 @@
 
 RustedGlass is a fast, portable, Rust-based Windows image viewer that combines on-the-fly decoding with a lean memory footprint.
 
+## Download
+
+Get a prebuilt binary from the [releases page](https://github.com/iamarxs/RustedGlass/releases), or build it yourself, instructions below.
+
 ## Features
 
 - Open individual images, browse folders, or drag and drop files, folders, and playlists. Browse with the keyboard, mouse wheel, or toolbar.
