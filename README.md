@@ -2,7 +2,7 @@
 
 ![RustedGlass banner](assets/RustedGlass-banner.png)
 
-RustedGlass is a fast, portable, Rust-based Windows image viewer that combines on-the-fly decoding with a lean memory footprint.
+RustedGlass is a fast, portable, Rust-based Windows image viewer with a minimal interface that combines on-the-fly decoding with a lean memory footprint.
 
 ## Download
 
@@ -11,6 +11,7 @@ Get a prebuilt binary from the [releases page](https://github.com/iamarxs/Rusted
 ## Features
 
 - Open individual images, browse folders, or drag and drop files, folders, and playlists. Browse with the keyboard, mouse wheel, or toolbar.
+- Minimal interface. Optionally hidable toolbar, a simple settings menu and all functionality available through keyboard shortcuts and the right-click menu.
 - View JPEG, PNG, WebP, TIFF, BMP, GIF, ICO, QOI, DDS, HDR, TGA, and Netpbm images. Animated GIFs play automatically.
 - Zoom, pan, and rotate images. Embedded EXIF orientation is applied automatically.
 - Inspect an image's full path, file size, dimensions, detected format, and available EXIF details. Copy the displayed frame to the clipboard at its native resolution.
@@ -79,6 +80,10 @@ Install [Rust and Cargo](https://rust-lang.org/tools/install/) with the `x86_64-
 
 Cargo downloads the pinned dependencies on the first build. The script writes the Windows x64 release executable to `build/RustedGlass.exe`. Run `cargo test --locked` to run the tests.
 
+## Screenshot
+
+![RustedGlass screenshot](assets/RustedGlass-Screenshot.png)
+
 ## Icons used
 
-The app uses icons provided by [Tabler](https://tabler.io/icons) ([GitHub](https://github.com/tabler/tabler-icons))
+The app uses icons provided by [Tabler](https://tabler.io/icons) ([GitHub](https://github.com/tabler/tabler-icons)).
