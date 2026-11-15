@@ -13,7 +13,7 @@ Get a prebuilt binary from the [releases page](https://github.com/iamarxs/Rusted
 - Open individual images, browse folders, or drag and drop files, folders, and playlists. Browse with the keyboard, mouse wheel, or toolbar.
 - Minimal interface. Optionally hidable toolbar and a borderless mode, a simple settings menu and all functionality available through keyboard shortcuts and the right-click menu.
 - Switch between framed, borderless, and fullscreen views, or keep the viewer on top. Window position and size are restored on restart.
-- View JPEG, PNG, WebP, TIFF, BMP, GIF, ICO, QOI, DDS, HDR, TGA, and Netpbm images. Animated GIFs play automatically.
+- View JPEG, PNG, WebP, TIFF, BMP, GIF, ICO, QOI, DDS, HDR, TGA, EXR, Farbfeld, APNG, animated-WebP and Netpbm images. Animated GIFs, PNGs and WebPs play automatically.
 - Zoom, pan, and rotate images. Embedded EXIF orientation is applied automatically.
 - Inspect an image's full path, file size, dimensions, detected format, and available EXIF details. Copy the displayed image to the clipboard at its native resolution.
 - Run slideshows with fixed or random intervals, shuffle, repeat, and with an option to let animated GIFs play through at least once.
@@ -86,7 +86,6 @@ Cargo downloads the pinned dependencies on the first build. The script writes th
 The app was developed with the aid of several AI models, including OpenAI's GPT-6 Astra, GPT 6.1 Sol, Mistral's Mistral Large 4, Z.ai's GLM 5.3 and GLM 5.3-Flash, and Deepseek's DeepSeek-V4.1-Flash.
 
 The development followed an orchestrator/subagent model, where I planned the work with the main orchestrator AI, which then maintained a list of tasks and passed them on to subagents. All work done by subagents was verified by the lead AI and myself, and periodically all models were tasked to run a security audit and a code review for the full project.
-
 
 ## Screenshot
 
