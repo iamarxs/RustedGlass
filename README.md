@@ -81,6 +81,13 @@ Install [Rust and Cargo](https://rust-lang.org/tools/install/) with the `x86_64-
 
 Cargo downloads the pinned dependencies on the first build. The script writes the Windows x64 release executable to `build/RustedGlass.exe`. Run `cargo test --locked` to run the tests.
 
+## AI Disclosure
+
+The app was developed with the aid of several AI models, including OpenAI's GPT-6 Astra, GPT 6.1 Sol, Mistral's Mistral Large 4, Z.ai's GLM 5.3 and GLM 5.3-Flash, and Deepseek's DeepSeek-V4.1-Flash.
+
+The development followed an orchestrator/subagent model, where I planned the work with the main orchestrator AI, which then maintained a list of tasks and passed them on to subagents. All work done by subagents was verified by the lead AI and myself, and periodically all models were tasked to run a security audit and a code review for the full project.
+
+
 ## Screenshot
 
 ![RustedGlass screenshot](assets/RustedGlass-Screenshot.png)
