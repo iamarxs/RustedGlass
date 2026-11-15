@@ -67,7 +67,7 @@ pub fn apply_action(hwnd: HWND, action: Action) {
                     state.stop_slideshow();
                 }
                 state.bitmap = None;
-                state.gif = None;
+                state.animation = None;
                 state.navigation_pending = false;
                 state.message = Some(String::from(
                     "Nothing shown: press F for a folder, or drop one here",

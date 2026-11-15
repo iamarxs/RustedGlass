@@ -74,8 +74,8 @@ impl State {
     fn load_skipping(&mut self, failed_frame: Option<PathBuf>) {
         self.slide_revision = self.slide_revision.wrapping_add(1);
         self.navigation_pending = false;
-        self.gif = None;
-        self.gif_played_once = false;
+        self.animation = None;
+        self.animation_played_once = false;
         self.slideshow_elapsed = false;
         self.rotation_turns = 0;
         self.drag = None;
@@ -85,46 +85,38 @@ impl State {
         if self.zoom_mode != ZoomMode::LockZoom {
             self.clear_manual_zoom();
         }
-        let mut first_failure = failed_frame;
-        let mut failures = 0;
-        if first_failure.is_some() {
-            self.photos.remove_current();
-            failures += 1;
-        }
+        // An unreadable file stays in the playlist (removing it would silently drop it from a
+        // saved playlist too); the load stops at it and the notice carries the decode error.
+        let mut failure: Option<(PathBuf, String)> = failed_frame.map(|p| (p, String::new()));
 
         while let Some(path) = self.photos.current().cloned() {
-            if let Some((gif, first)) = decode::is_animated(&path)
-                .then(|| decode::Gif::open(&path).ok())
-                .flatten()
-            {
-                self.gif = Some(gif);
-                self.show_gif_frame(first);
+            // One decode per file: a cache hit needs none, a still is stored from its only
+            // decode, and an animation streams its frames from the same single open.
+            if let Some(bitmap) = crate::cache::cached(&path) {
+                self.bitmap = Some(bitmap);
                 break;
             }
-            match crate::cache::load(&path) {
-                Ok(bitmap) => {
-                    self.bitmap = Some(bitmap);
-                    break;
+            match decode::open(&path) {
+                Ok(decode::Opened::Still(decoded)) => {
+                    self.bitmap = Some(crate::cache::store(&path, decoded));
                 }
-                Err(_) => {
-                    self.photos.remove_current();
-                    first_failure.get_or_insert(path);
-                    failures += 1;
+                Ok(decode::Opened::Animated(animation, first)) => {
+                    self.animation = Some(animation);
+                    self.show_frame(first);
                 }
+                Err(e) => failure = Some((path, e)),
             }
+            break;
         }
 
-        if let Some(path) = first_failure {
+        if let Some((path, error)) = failure {
             let name = path
                 .file_name()
                 .unwrap_or(path.as_os_str())
                 .to_string_lossy();
-            let mut notice = format!("Removed from the playlist — {name} is unreadable.");
-            if failures > 1 {
-                notice.push_str(&format!(
-                    " {} more unreadable entries removed from the playlist.",
-                    failures - 1
-                ));
+            let mut notice = format!("{name} is unreadable.");
+            if !error.is_empty() {
+                notice.push_str(&format!(" {error}"));
             }
             self.notice = Some(notice);
             self.unreadable_notice_pending = true;
@@ -138,50 +130,54 @@ impl State {
 
     /// Called after the current frame has had its full display delay.
     pub fn advance_frame(&mut self) {
-        let Some(gif) = &mut self.gif else { return };
-        match gif.next_frame() {
-            Ok(Some(frame)) => self.show_gif_frame(frame),
+        let Some(animation) = &mut self.animation else {
+            return;
+        };
+        match animation.next_frame() {
+            Ok(Some(frame)) => self.show_frame(frame),
             Ok(None) => {
-                self.gif_played_once = true;
+                self.animation_played_once = true;
                 if !self.slideshow_elapsed {
-                    self.rewind_gif();
+                    self.rewind_animation();
                 }
             }
             Err(_) => self.load_skipping(self.photos.current().cloned()),
         }
     }
 
-    pub(super) fn rewind_gif(&mut self) {
-        let Some(gif) = &mut self.gif else { return };
-        match gif.rewind().and_then(|_| gif.next_frame()) {
-            Ok(Some(frame)) => self.show_gif_frame(frame),
+    pub(super) fn rewind_animation(&mut self) {
+        let Some(animation) = &mut self.animation else {
+            return;
+        };
+        match animation.rewind().and_then(|_| animation.next_frame()) {
+            Ok(Some(frame)) => self.show_frame(frame),
             _ => self.load_skipping(self.photos.current().cloned()),
         }
     }
 
-    fn show_gif_frame(&mut self, frame: decode::AnimFrame) {
+    fn show_frame(&mut self, frame: decode::AnimFrame) {
         let mut bitmap = Bitmap::from_decoded(frame.image);
         for _ in 0..self.rotation_turns {
             bitmap.rotate_90_clockwise();
         }
         self.bitmap = Some(bitmap);
-        self.gif_frame_ms = frame.delay_ms;
+        self.frame_ms = frame.delay_ms;
         self.frame_revision = self.frame_revision.wrapping_add(1);
     }
 
     pub fn frame_delay_ms(&self) -> u32 {
         if self.navigation_pending
-            || self.gif.is_none()
+            || self.animation.is_none()
             || (self.slideshow_paused
                 && self.knobs.play_gif_once
                 && !self.slideshow_paused_by_space)
         {
             return 0;
         }
-        self.gif_frame_ms
+        self.frame_ms
     }
 
-    /// Applies a rotation to the still image and to every decoded GIF frame.
+    /// Applies a rotation to the still image and to every decoded animation frame.
     pub fn rotate_frames(&mut self, degrees: i32) {
         let turns = ((degrees.rem_euclid(360)) / 90) as usize;
         self.rotation_turns = (self.rotation_turns + turns) % 4;

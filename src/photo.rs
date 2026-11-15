@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const IMAGE_FORMATS: &str = ".bmp;.dds;.gif;.gifv;.hdr;.ico;.jfif;.jpe;.jpeg;.jpg;.pam;.pbm;.pgm;.png;.pnm;.ppm;.qoi;.tga;.tif;.tiff;.webp";
+pub const IMAGE_FORMATS: &str = ".apng;.bmp;.dds;.exr;.farbfeld;.ff;.gif;.gifv;.hdr;.ico;.jfif;.jpe;.jpeg;.jpg;.pam;.pbm;.pgm;.png;.pnm;.ppm;.qoi;.tga;.tif;.tiff;.webp";
 
 /// Extensions with a leading dot, lower-cased.
 pub fn image_formats() -> Vec<String> {
@@ -277,6 +277,8 @@ impl PhotoList {
 }
 
 /// Lists image files in `dir`, optionally including hidden entries and subfolders.
+#[cfg(test)]
+mod format_tests;
 #[cfg(test)]
 mod tests;
 

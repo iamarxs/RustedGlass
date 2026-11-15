@@ -51,17 +51,18 @@ fn importing_decodes_the_current_image_and_defers_unseen_files() {
     state.photos.files.push(bad.clone());
     state.photos.index = 1;
     state.load_current();
+    // an unreadable entry stays in the playlist and only produces a notice
     assert_eq!(
         state.photos.files,
-        [good.clone(), good.clone(), bad.clone()]
+        [good.clone(), bad.clone(), good.clone(), bad.clone()]
     );
     assert_eq!(state.photos.index, 1);
     assert!(state
         .notice
         .as_deref()
         .unwrap()
-        .contains("Removed from the playlist — b-corrupt.png is unreadable"));
-    assert!(state.frame().is_some());
+        .contains("b-corrupt.png is unreadable"));
+    assert!(state.frame().is_none());
 
     std::fs::remove_file(bad).unwrap();
     std::fs::remove_file(good).unwrap();
@@ -221,4 +222,39 @@ fn startup_and_sibling_navigation_use_the_folder_settings() {
     for folder in [current, nested, sibling, dir] {
         std::fs::remove_dir(folder).unwrap();
     }
+}
+
+#[test]
+fn dropping_playlist_files_appends_or_replaces_like_other_drops() {
+    let dir = import_test_dir("drop-rgpl");
+    let a = dir.join("a.ppm");
+    let b = dir.join("b.ppm");
+    let c = dir.join("c.ppm");
+    for file in [&a, &b, &c] {
+        std::fs::write(file, b"P6\n1 1\n255\n\xff\x00\x00").unwrap();
+    }
+    let list1 = dir.join("one.rgpl");
+    let list2 = dir.join("two.rgpl");
+    crate::rgpl::write_file(&list1, &[a.clone()]).unwrap();
+    crate::rgpl::write_file(&list2, &[b.clone(), c.clone()]).unwrap();
+
+    let mut state = State::new(dir.join("rgconfig.json"), &[]);
+
+    // playlist view: both dropped playlists load and append to the current list
+    state.photos.files = vec![dir.join("mine.png")];
+    state.append_drop(vec![list1.clone(), list2.clone()]);
+    assert_eq!(
+        state.photos.files,
+        [dir.join("mine.png"), a.clone(), b.clone(), c.clone()]
+    );
+
+    // image view: a dropped playlist replaces the list, and is not "unsupported"
+    state.open_files(&[list1.clone()]);
+    assert_eq!(state.photos.files, [a.clone()]);
+    assert!(state.notice.is_none());
+
+    for file in [a, b, c, list1, list2] {
+        std::fs::remove_file(file).unwrap();
+    }
+    std::fs::remove_dir(dir).unwrap();
 }

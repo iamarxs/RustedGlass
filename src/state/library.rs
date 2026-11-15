@@ -38,9 +38,27 @@ impl State {
         }
     }
 
+    /// A drop expands folders to their images and playlist files to their rows (each playlist
+    /// loads, so dropping several adds every list); other paths stay as they are.
+    fn expand_paths(&self, paths: Vec<PathBuf>) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        for path in paths {
+            if path.is_dir() {
+                files.extend(self.folder_images(&path));
+            } else if rgpl::is_playlist_file(&path) {
+                if let Ok(entries) = rgpl::read_file(&path) {
+                    files.extend(entries.into_iter().filter(|entry| entry.exists()));
+                }
+            } else {
+                files.push(path);
+            }
+        }
+        files
+    }
+
     /// Replace the playlist with supported paths from the picker or drop.
     pub fn open_files(&mut self, paths: &[PathBuf]) {
-        let files = self.filter_image_types(paths.to_vec());
+        let files = self.filter_image_types(self.expand_paths(paths.to_vec()));
         if !files.is_empty() {
             self.photos = PhotoList::from_files(&files, photo::image_formats());
             self.load_new_order();
@@ -74,15 +92,7 @@ impl State {
     }
 
     pub fn append_drop(&mut self, paths: Vec<PathBuf>) {
-        let mut files = Vec::new();
-        for path in paths {
-            if path.is_dir() {
-                files.extend(self.folder_images(&path));
-            } else {
-                files.push(path);
-            }
-        }
-        self.add_files(&files);
+        self.add_files(&self.expand_paths(paths));
     }
 
     fn folder_images(&self, dir: &Path) -> Vec<PathBuf> {

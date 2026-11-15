@@ -21,9 +21,9 @@ impl State {
             from.to_string()
         };
         self.notice = Some(format!("Slideshow started, {interval} s per image"));
-        if self.knobs.play_gif_once && !self.navigation_pending && self.gif.is_some() {
-            self.gif_played_once = false;
-            self.rewind_gif();
+        if self.knobs.play_gif_once && !self.navigation_pending && self.animation.is_some() {
+            self.animation_played_once = false;
+            self.rewind_animation();
         }
     }
 
@@ -73,15 +73,20 @@ impl State {
         if !self.slideshow_running
             || self.navigation_pending
             || !self.slideshow_elapsed
-            || (self.knobs.play_gif_once && self.gif.is_some() && !self.gif_played_once)
+            || (self.knobs.play_gif_once && self.animation.is_some() && !self.animation_played_once)
         {
             return false;
         }
         self.slideshow_elapsed = false;
+        if self.photos.is_empty() {
+            // every entry was removed or unreadable: stop instead of re-arming forever
+            self.slideshow_running = false;
+            return true;
+        }
         if self.step(1) {
             self.load_current();
-        } else if self.gif_played_once {
-            self.rewind_gif();
+        } else if self.animation_played_once {
+            self.rewind_animation();
         }
         true
     }

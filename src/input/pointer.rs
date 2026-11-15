@@ -30,8 +30,14 @@ pub fn on_drag(hwnd: HWND, lparam: LPARAM) {
         state.is_dragging = true;
         let step = state.knobs.pan_speed.max(1) as f64 / 20.0;
         state.offset = (
-            state.offset.0 + ((w32::pointer_x(lparam) - x) as f64 * step).round() as i32,
-            state.offset.1 + ((w32::pointer_y(lparam) - y) as f64 * step).round() as i32,
+            state
+                .offset
+                .0
+                .saturating_add(((w32::pointer_x(lparam) - x) as f64 * step).round() as i32),
+            state
+                .offset
+                .1
+                .saturating_add(((w32::pointer_y(lparam) - y) as f64 * step).round() as i32),
         );
         state.drag = Some((w32::pointer_x(lparam), w32::pointer_y(lparam)));
     });
@@ -53,7 +59,8 @@ pub fn show_menu(hwnd: HWND) {
     }
 }
 
-/// File and folder drops append in the playlist view and open in the image view.
+/// File, folder and playlist drops append in the playlist view and replace the list in the
+/// image view; dropped `.rgpl` files load their rows like any other dropped content.
 pub unsafe fn on_drop(hwnd: HWND, drop: HDROP) {
     let count = unsafe { DragQueryFileW(drop, u32::MAX, None) } as usize;
     let mut paths = Vec::new();
@@ -65,17 +72,6 @@ pub unsafe fn on_drop(hwnd: HWND, drop: HDROP) {
         paths.push(PathBuf::from(OsString::from_wide(&buffer)));
     }
 
-    if let [path] = paths.as_slice() {
-        if crate::rgpl::is_playlist_file(path) {
-            state::with_state(|state| {
-                if let Err(error) = state.open_playlist(path) {
-                    state.notice = Some(error);
-                }
-            });
-            panels::refresh_import(hwnd);
-            return;
-        }
-    }
     if playlist::is_visible() {
         state::with_state(|state| state.append_drop(paths));
     } else if paths.len() == 1 && paths[0].is_dir() {

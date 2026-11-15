@@ -1,4 +1,4 @@
-//! Turning image files into pixels: full images and GIF animation frames.
+//! Turning image files into pixels: full images and animation frames.
 //!
 //! Uses the `image` crate, so the formats `photo.rs` lists but `image` does not decode
 //! (RAW, HEIC, JXL, SVG) are reported as errors.
@@ -18,13 +18,46 @@ pub fn decode(path: &Path) -> Result<Decoded, String> {
     Ok(to_decoded(load_rgba(path)?))
 }
 
+/// Decoders never see an image wider/taller than this or bigger than `MAX_PIXEL_BYTES`, so a
+/// crafted header cannot ask for a multi-gigabyte buffer. The `image` crate's default limits
+/// cap allocations only, not dimensions, and `into_decoder` does not reserve-check the output
+/// buffer the way `ImageReader::decode` does — so the dimensions are checked here as well.
+const MAX_DIMENSION: u32 = 16384;
+const MAX_PIXEL_BYTES: u64 = 512 * 1024 * 1024;
+
+fn limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DIMENSION);
+    limits.max_image_height = Some(MAX_DIMENSION);
+    limits
+}
+
+/// Rejects dimensions no Win32 bitmap could hold, before any full-size buffer is allocated.
+fn check_dimensions(path: &Path, decoder: &impl image::ImageDecoder) -> Result<(), String> {
+    let (width, height) = decoder.dimensions();
+    if width == 0
+        || height == 0
+        || width > MAX_DIMENSION
+        || height > MAX_DIMENSION
+        || decoder.total_bytes() > MAX_PIXEL_BYTES
+    {
+        return Err(format!(
+            "{path:?}: {width}x{height} is too large to display"
+        ));
+    }
+    Ok(())
+}
+
 fn load_rgba(path: &Path) -> Result<image::RgbaImage, String> {
-    let mut decoder = image::ImageReader::open(path)
+    let mut reader = image::ImageReader::open(path)
         .map_err(|e| format!("{path:?}: {e}"))?
         .with_guessed_format()
-        .map_err(|e| format!("{path:?}: {e}"))?
+        .map_err(|e| format!("{path:?}: {e}"))?;
+    reader.limits(limits());
+    let mut decoder = reader
         .into_decoder()
         .map_err(|e| format!("{path:?}: {e}"))?;
+    check_dimensions(path, &decoder)?;
 
     let orientation = decoder
         .orientation()
@@ -43,17 +76,18 @@ pub fn to_decoded(rgba: image::RgbaImage) -> Decoded {
     }
 }
 
-/// One frame of an animated GIF, already composited onto the full canvas.
+/// One frame of an animation (GIF, APNG, animated WebP), already composited onto the full canvas.
 pub struct AnimFrame {
     pub image: Decoded,
     pub delay_ms: u32,
 }
 
-/// Animated formats: `.gif` and `.gifv`.
+/// Animated formats: `.gif`, `.gifv`, `.png`/`.apng` (APNG) and `.webp`. A still file of one of
+/// these formats opens as `Opened::Still`, so it loads like any other still.
 pub fn is_animated(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()),
-        Some(ext) if ext == "gif" || ext == "gifv"
+        Some(ext) if matches!(ext.as_str(), "gif" | "gifv" | "png" | "apng" | "webp")
     )
 }
 
@@ -67,29 +101,62 @@ pub fn frame_delay_ms(numer: u32, denom: u32) -> u32 {
     }
 }
 
-/// Streams composited GIF frames so long animations do not need a full frame cache.
-pub struct Gif {
+/// A file opened in a single decode: a still, or an animation with its first frame.
+pub enum Opened {
+    Still(Decoded),
+    Animated(Animation, AnimFrame),
+}
+
+/// Opens any image file in one decode. The animated formats go through the frame decoders,
+/// so a single-frame `.gif`/`.png`/`.webp` arrives as `Still` with its pixels instead of
+/// being decoded a second time by the still path. A file whose content does not match its
+/// extension falls back to the content-sniffing still decoder, as the still path always could.
+pub fn open(path: &Path) -> Result<Opened, String> {
+    if !is_animated(path) {
+        return decode(path).map(Opened::Still);
+    }
+    open_animated(path).or_else(|_| decode(path).map(Opened::Still))
+}
+
+/// The animated-format path: frame streaming, with a single-frame file as a still.
+fn open_animated(path: &Path) -> Result<Opened, String> {
+    let (frames, orientation) = anim_frames(path)?;
+    let mut animation = Animation {
+        path: path.to_owned(),
+        frames: frames.peekable(),
+    };
+    let first = animation
+        .next_frame()?
+        .ok_or_else(|| format!("{path:?} has no animation frames"))?;
+    if animation.frames.peek().is_none() {
+        // The one frame is the whole image: it goes back as a still, upright the way the
+        // still path would have produced it, instead of being decoded a second time.
+        return Ok(Opened::Still(upright(first.image, orientation)));
+    }
+    Ok(Opened::Animated(animation, first))
+}
+
+/// A decoded frame with the orientation the file's metadata carries applied, as the still
+/// path does.
+fn upright(image: Decoded, orientation: image::metadata::Orientation) -> Decoded {
+    let buffer = image::RgbaImage::from_raw(image.width, image.height, image.rgba)
+        .expect("a frame buffer matches its own dimensions");
+    let mut dynamic = image::DynamicImage::ImageRgba8(buffer);
+    dynamic.apply_orientation(orientation);
+    to_decoded(dynamic.into_rgba8())
+}
+
+/// Streams composited animation frames (GIF, APNG, animated WebP) so long animations do not
+/// need a full frame cache.
+pub struct Animation {
     path: std::path::PathBuf,
     frames: std::iter::Peekable<image::Frames<'static>>,
 }
 
-impl Gif {
-    pub fn open(path: &Path) -> Result<(Self, AnimFrame), String> {
-        let mut gif = Self {
-            path: path.to_owned(),
-            frames: gif_frames(path)?.peekable(),
-        };
-        let first = gif
-            .next_frame()?
-            .ok_or_else(|| format!("{path:?} has no GIF frames"))?;
-        if gif.frames.peek().is_none() {
-            return Err(format!("{path:?} is not animated"));
-        }
-        Ok((gif, first))
-    }
-
+impl Animation {
     pub fn rewind(&mut self) -> Result<(), String> {
-        self.frames = gif_frames(&self.path)?.peekable();
+        let (frames, _) = anim_frames(&self.path)?;
+        self.frames = frames.peekable();
         Ok(())
     }
 
@@ -108,68 +175,47 @@ impl Gif {
     }
 }
 
-fn gif_frames(path: &Path) -> Result<image::Frames<'static>, String> {
+/// The frames of an animated file, behind the decoder the extension calls for, with the
+/// orientation the file's metadata carries. All three decoders implement
+/// `AnimationDecoder`, so one frame iterator covers every format.
+fn anim_frames(
+    path: &Path,
+) -> Result<(image::Frames<'static>, image::metadata::Orientation), String> {
     use image::AnimationDecoder;
 
     let file = std::io::BufReader::new(fs::File::open(path).map_err(|e| format!("{path:?}: {e}"))?);
-    let decoder =
-        image::codecs::gif::GifDecoder::new(file).map_err(|e| format!("{path:?}: {e}"))?;
-    Ok(decoder.into_frames())
+    let error = |e: image::ImageError| format!("{path:?}: {e}");
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    // `GifDecoder`/`PngDecoder` are built with `Limits::no_limits()` inside the crate, so the
+    // limits are set here explicitly, and the canvas size is checked before frames stream.
+    let (frames, orientation) = match ext.as_deref() {
+        Some("png") | Some("apng") => {
+            let mut decoder = image::codecs::png::PngDecoder::new(file).map_err(error)?;
+            decoder.set_limits(limits()).map_err(error)?;
+            check_dimensions(path, &decoder)?;
+            let orientation = decoder.orientation().map_err(error)?;
+            (decoder.apng().map_err(error)?.into_frames(), orientation)
+        }
+        Some("webp") => {
+            let mut decoder = image::codecs::webp::WebPDecoder::new(file).map_err(error)?;
+            decoder.set_limits(limits()).map_err(error)?;
+            check_dimensions(path, &decoder)?;
+            let orientation = decoder.orientation().map_err(error)?;
+            (decoder.into_frames(), orientation)
+        }
+        _ => {
+            let mut decoder = image::codecs::gif::GifDecoder::new(file).map_err(error)?;
+            decoder.set_limits(limits()).map_err(error)?;
+            check_dimensions(path, &decoder)?;
+            let orientation = decoder.orientation().map_err(error)?;
+            (decoder.into_frames(), orientation)
+        }
+    };
+    Ok((frames, orientation))
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn gif_delays_are_bounded() {
-        assert_eq!(frame_delay_ms(100, 1), 100);
-        assert_eq!(
-            frame_delay_ms(5, 1),
-            20,
-            "clamped to the shortest usable delay"
-        );
-        assert_eq!(frame_delay_ms(0, 1), 100, "a missing delay gets a sane one");
-        assert_eq!(
-            frame_delay_ms(10, 0),
-            100,
-            "a zero denominator cannot divide"
-        );
-        assert!(is_animated(Path::new("cat.GIF")));
-        assert!(is_animated(Path::new("cat.gifv")));
-        assert!(!is_animated(Path::new("cat.png")));
-    }
-
-    #[test]
-    fn a_jpeg_with_exif_rotation_is_decoded_upright() {
-        let path = crate::test_path("exif-orientation-test.jpg");
-        let mut jpeg = Vec::new();
-        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
-            .encode_image(&image::RgbImage::new(8, 3))
-            .unwrap();
-        let exif = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
-        let length = ((exif.len() + 2) as u16).to_be_bytes();
-        jpeg.splice(
-            2..2,
-            [0xff, 0xe1, length[0], length[1]]
-                .into_iter()
-                .chain(exif.iter().copied()),
-        );
-        fs::write(&path, jpeg).unwrap();
-        let decoded = decode(&path).unwrap();
-        assert_eq!((decoded.width, decoded.height), (3, 8));
-        let first = crate::cache::load(&path).unwrap();
-        let second = crate::cache::load(&path).unwrap();
-        assert!(first.shares_pixels(&second));
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn a_still_file_is_not_an_animation() {
-        let path = crate::test_path("ig_still_test.png");
-        fs::write(&path, b"not even a png").unwrap();
-        assert!(Gif::open(&path).is_err());
-        assert!(decode(&path).is_err());
-        fs::remove_file(&path).ok();
-    }
-}
+mod tests;
