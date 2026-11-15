@@ -1,6 +1,6 @@
 use super::*;
-/// The wheel: Ctrl zooms, otherwise it steps through the list. `MouseWheelActions` offers more
-/// than these two in the C# settings; supporting them means reading that key here.
+/// The wheel: Ctrl zooms, otherwise it steps through the list. A `MouseWheelActions` key
+/// could offer more actions; supporting them means reading that key here.
 pub fn on_wheel(hwnd: HWND, wparam: WPARAM) {
     let delta = w32::wheel_delta(wparam);
     let zoom = unsafe { ctrl_down() };
@@ -11,15 +11,14 @@ pub fn on_wheel(hwnd: HWND, wparam: WPARAM) {
         return;
     }
     state::with_state(|state| {
-        // Up is nearer, down is further, as it is in the C# viewer.
+        // Up is nearer, down is further.
         let step = zoom::zoom_step(state.knobs.zoom_speed, delta);
         state.zoom_by(screen, if delta > 0 { step } else { 1.0 / step });
     });
     view::refresh(hwnd);
 }
 
-/// A drag moves the image, as far as `PanSpeed` lets it. Pan keys of the C# viewer use the same
-/// speed; those keys are not ported.
+/// A drag moves the image, as far as `PanSpeed` lets it.
 pub fn on_drag(hwnd: HWND, lparam: LPARAM) {
     state::with_state(|state| {
         if !state.knobs.free_pan {

@@ -1,7 +1,6 @@
 //! File operations the tool bar offers: delete, rename, copy to, move to, show in Explorer.
 //!
-//! The C# originals live in `Common/BHelper/File.cs` / `IO.cs`. A delete goes to the recycle bin,
-//! like `BFile.MoveToRecycleBin`.
+//! A delete goes to the recycle bin.
 
 use crate::w32::file_name;
 use std::ffi::OsString;
@@ -9,7 +8,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use windows::core::PCWSTR;
-use windows::Win32::Storage::FileSystem::{CopyFileW, MoveFileExW, MOVE_FILE_FLAGS};
+use windows::Win32::Storage::FileSystem::{CopyFileW, MoveFileExW, MOVEFILE_COPY_ALLOWED};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
     COINIT_APARTMENTTHREADED,
@@ -194,7 +193,7 @@ fn transfer(path: &Path, target: &Path, copy: bool) -> std::io::Result<()> {
         if copy {
             CopyFileW(source, target, true)
         } else {
-            MoveFileExW(source, target, MOVE_FILE_FLAGS(0))
+            MoveFileExW(source, target, MOVEFILE_COPY_ALLOWED)
         }
     }
     .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 & 0xffff))

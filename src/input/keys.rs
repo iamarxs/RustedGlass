@@ -5,7 +5,8 @@ type Shortcut = (&'static str, &'static str);
 pub const SHORTCUT_GROUPS: &[(&str, &[Shortcut])] = &[
     ("Browse images", &[
         ("← / ↑", "Previous image"),
-        ("→ / ↓ / Space", "Next image"),
+        ("→ / ↓", "Next image"),
+        ("Space", "Next image, or pause / resume slideshow"),
         ("Home / End", "First, last image"),
         ("Wheel", "Previous, next image"),
         ("O", "Open files"),
@@ -46,7 +47,7 @@ pub const SHORTCUT_GROUPS: &[(&str, &[Shortcut])] = &[
         ("S / Ctrl + P", "Open the settings panel"),
         ("Right-click", "Menu of everything"),
         ("F1", "Shortcut list on, off"),
-        ("Esc", "Close panel, image, window"),
+        ("Esc", "Close panel; stop slideshow, then quit; otherwise quit immediately"),
         ("Ctrl + Q", "Quit"),
     ]),
 ];
@@ -75,7 +76,14 @@ pub fn on_key(vk: u32, ctrl: bool, shift: bool) -> Option<Action> {
     let key = VIRTUAL_KEY(vk as u16);
     let action = match key {
         VK_LEFT | VK_UP => Action::Previous,
-        VK_RIGHT | VK_DOWN | VK_SPACE => Action::Next,
+        VK_RIGHT | VK_DOWN => Action::Next,
+        VK_SPACE => {
+            if state::with_state(|s| s.slideshow_running || s.slideshow_paused).unwrap_or(false) {
+                Action::ToggleSlideshowPause
+            } else {
+                Action::Next
+            }
+        }
         VK_HOME => Action::First,
         VK_END => Action::Last,
         VK_ESCAPE => return Some(escape()),
@@ -121,14 +129,18 @@ pub fn on_key(vk: u32, ctrl: bool, shift: bool) -> Option<Action> {
     Some(action)
 }
 
-/// `Esc`: close the panel, else the image, else the window.
+/// `Esc`: close the panel or playlist, stop a running slideshow (the next press quits),
+/// otherwise quit immediately — even with an image open.
 fn escape() -> Action {
     if state::with_state(|state| state.dialog != Dialog::None).unwrap_or(false) {
         Action::ClosePanel
     } else if state::with_state(|s| s.playlist_visible) == Some(true) {
         Action::ShowPlaylist
-    } else if state::with_state(|state| state.frame().is_some()).unwrap_or(false) {
-        Action::CloseImage
+    } else if state::with_state(|s| s.slideshow_running || s.slideshow_paused) == Some(true) {
+        Action::StopSlideshowAndArmQuit
+    } else if state::with_state(|state| state.slideshow_stopped_by_escape) == Some(true) {
+        state::with_state(|state| state.slideshow_stopped_by_escape = false);
+        Action::Quit
     } else {
         Action::Quit
     }
@@ -160,6 +172,41 @@ mod tests {
         assert_eq!(on_key(b'S' as u32, true, false), Some(Action::SavePlaylist));
         assert_eq!(on_key(b'O' as u32, false, false), Some(Action::OpenFile));
         assert_eq!(on_key(b'S' as u32, false, false), Some(Action::Settings));
+    }
+
+    #[test]
+    fn space_pauses_a_running_slideshow_but_still_advances_when_off() {
+        let mut state = crate::state::State::new(crate::test_path("unused-config.json"), &[]);
+        state.photos.files.push("image.png".into());
+        assert_eq!(on_key(VK_SPACE.0 as u32, false, false), Some(Action::Next));
+        state.start_slideshow();
+        state::install(state);
+        assert_eq!(
+            on_key(VK_SPACE.0 as u32, false, false),
+            Some(Action::ToggleSlideshowPause)
+        );
+    }
+
+    #[test]
+    fn escape_stops_a_slideshow_then_quits_on_the_next_press() {
+        let mut state = crate::state::State::new(crate::test_path("unused-config.json"), &[]);
+        state.photos.files.push("image.png".into());
+        state.start_slideshow();
+        state::install(state);
+        assert_eq!(escape(), Action::StopSlideshowAndArmQuit);
+        state::with_state(|state| {
+            state.stop_slideshow();
+            state.slideshow_stopped_by_escape = true;
+        });
+        assert_eq!(escape(), Action::Quit);
+    }
+
+    #[test]
+    fn escape_quits_immediately_when_no_slideshow_runs_even_with_an_image_open() {
+        let mut state = crate::state::State::new(crate::test_path("unused-config.json"), &[]);
+        state.photos.files.push("image.png".into());
+        state::install(state);
+        assert_eq!(escape(), Action::Quit);
     }
 
     #[test]

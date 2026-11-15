@@ -137,6 +137,7 @@ pub fn status(hdc: HDC, (width, height): (u32, u32), message: &str) {
         hdc,
         (left, bottom - 36, width - left, bottom),
         style::CONTROL,
+        COLORREF(0x0044_4444),
     );
     style::caption(
         hdc,

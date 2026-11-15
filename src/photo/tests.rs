@@ -2,7 +2,7 @@ use super::*;
 use crate::w32::file_name;
 
 #[test]
-fn format_list_covers_enabled_decoders_without_magick_formats() {
+fn format_list_covers_only_enabled_decoders() {
     let formats = image_formats();
     assert!(formats.contains(&".jpg".to_string()));
     assert!(!formats.contains(&".heic".to_string()));

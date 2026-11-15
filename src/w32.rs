@@ -158,12 +158,22 @@ pub fn command_id(wparam: WPARAM) -> usize {
 
 /// Reads a control's text without the `Win32_UI_Controls` feature.
 pub unsafe fn control_text(hwnd: HWND) -> String {
-    let mut buffer = vec![0u16; 256];
+    let length = unsafe {
+        SendMessageW(
+            hwnd,
+            windows::Win32::UI::WindowsAndMessaging::WM_GETTEXTLENGTH,
+            None,
+            None,
+        )
+    }
+    .0
+    .max(0) as usize;
+    let mut buffer = vec![0u16; length + 1];
     let len = unsafe {
         SendMessageW(
             hwnd,
             WM_GETTEXT,
-            Some(WPARAM(255)),
+            Some(WPARAM(buffer.len())),
             Some(LPARAM(buffer.as_mut_ptr() as isize)),
         )
     };

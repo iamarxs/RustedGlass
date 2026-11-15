@@ -47,10 +47,15 @@ pub fn accent() -> COLORREF {
     })
 }
 
-pub fn surface(dc: HDC, (left, top, right, bottom): (i32, i32, i32, i32), fill: COLORREF) {
+pub fn surface(
+    dc: HDC,
+    (left, top, right, bottom): (i32, i32, i32, i32),
+    fill: COLORREF,
+    outline: COLORREF,
+) {
     unsafe {
         let brush = CreateSolidBrush(fill);
-        let pen = CreatePen(PS_SOLID, 1, COLORREF(0x0044_4444));
+        let pen = CreatePen(PS_SOLID, 1, outline);
         let old_brush = SelectObject(dc, brush.into());
         let old_pen = SelectObject(dc, pen.into());
         let _ = RoundRect(dc, left, top, right, bottom, 10, 10);

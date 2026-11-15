@@ -1,7 +1,6 @@
 //! Image files: the format list, folder enumeration, navigation and decoding.
 //!
-//! Ported from `Common/Types/Const.cs` (`IMAGE_FORMATS`), `Common/BHelper/Path.cs` and the
-//! navigation part of the main-window view model. Only enabled Rust decoders are browsable.
+//! Only enabled decoders are browsable.
 
 use std::fs;
 use std::path::{Path, PathBuf};

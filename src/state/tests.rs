@@ -7,16 +7,15 @@ fn fresh_config() -> Config {
 
 #[test]
 fn the_tool_bar_starts_shown() {
-    // `EnableToolBar` is this app's own key, not one shared with C#, so it is kept out of the
-    // list of defaults above.
+    // `EnableToolBar` is this app's own key, so it is kept out of the list of defaults above.
     assert!(Knobs::from(&fresh_config()).show_toolbar);
 }
 
 #[test]
-fn defaults_match_the_csharp_defaults() {
+fn defaults_are_as_expected() {
     let knobs = Knobs::from(&fresh_config());
     assert_eq!(knobs.zoom_mode, ZoomMode::AutoZoom);
-    assert!(knobs.loop_back, "EnableLoopBackNavigation is on in C#");
+    assert!(knobs.loop_back, "EnableLoopBackNavigation is on by default");
     assert!(!knobs.auto_sibling_dir);
     assert!(!knobs.random_order);
     assert!(knobs.loop_slideshow);
@@ -47,6 +46,50 @@ fn selecting_lock_zoom_keeps_the_factor_on_screen() {
     assert_eq!(state.scale, kept);
     state.select_zoom_mode(ZoomMode::AutoZoom, (400, 400));
     assert_eq!(state.scale, 0.0);
+}
+
+#[test]
+fn lock_zoom_keeps_its_factor_when_loading_another_image() {
+    let mut state = State::new(crate::test_path("unused-config.json"), &[]);
+    state.zoom_mode = ZoomMode::LockZoom;
+    state.set_zoom_factor(2.5);
+    state.load_current();
+    assert_eq!(state.scale, 2.5);
+}
+
+#[test]
+fn space_pause_toggle_reports_both_states() {
+    let mut state = three_images();
+    state.start_slideshow();
+    state.toggle_slideshow_pause();
+    assert!(!state.slideshow_running && state.slideshow_paused);
+    assert_eq!(state.notice.as_deref(), Some("Slideshow paused"));
+    state.toggle_slideshow_pause();
+    assert!(state.slideshow_running && !state.slideshow_paused);
+    assert_eq!(state.notice.as_deref(), Some("Slideshow resumed"));
+}
+
+#[test]
+fn playlist_cannot_resume_a_slideshow_paused_by_space() {
+    let mut state = three_images();
+    state.start_slideshow();
+    state.toggle_slideshow_pause();
+    state.playlist_visible = true;
+    state.pause_slideshow();
+    state.toggle_slideshow_pause();
+    assert!(!state.slideshow_running);
+    assert!(state.slideshow_paused_by_space);
+    state.playlist_visible = false;
+    state.toggle_slideshow_pause();
+    assert!(state.slideshow_running);
+}
+
+#[test]
+fn an_empty_playlist_cannot_start_a_slideshow() {
+    let mut state = State::new(crate::test_path("unused-config.json"), &[]);
+    state.start_slideshow();
+    assert!(!state.slideshow_running && !state.slideshow_paused);
+    assert!(state.notice.is_none());
 }
 
 /// A state holding three images, at the first of them.

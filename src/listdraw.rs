@@ -12,7 +12,7 @@ use windows::Win32::UI::Controls::{
     NMCUSTOMDRAW_DRAW_STATE_FLAGS, NMLVCUSTOMDRAW, NM_CUSTOMDRAW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetCapture, ReleaseCapture, SetCapture, VK_ESCAPE,
+    GetCapture, ReleaseCapture, SetCapture, SetFocus, VK_ESCAPE,
 };
 use windows::Win32::UI::Shell::DefSubclassProc;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -207,6 +207,9 @@ unsafe extern "system" fn list_proc(
                     if let Ok(parent) = GetParent(hwnd) {
                         crate::view::refresh(parent);
                     }
+                }
+                if let Ok(parent) = GetParent(hwnd) {
+                    let _ = SetFocus(Some(parent));
                 }
                 return LRESULT(0);
             }

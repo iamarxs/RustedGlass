@@ -8,15 +8,14 @@ use serde_json::Value;
 
 pub const CONFIG_USER: &str = "rgconfig.json";
 pub const CONFIG_CMD_PREFIX: &str = "-p:";
-pub const SPEC_VERSION: f32 = 10.0;
+pub const SPEC_VERSION: f32 = 1.0;
 
 /// Values from the selected user file and command-line overrides.
 pub struct Config {
     user_path: PathBuf,
     values: HashMap<String, Value>,
     /// Keys changed by the user, under their original spelling, waiting to be written
-    /// to `rgconfig.json`. Only these are written, so the key names stay the ones the C#
-    /// app reads and writes.
+    /// to `rgconfig.json`. Only these are written, so the user's own key names survive.
     dirty: HashMap<String, (String, Value)>,
     pub incompatible_user_path: Option<PathBuf>,
 }
@@ -92,8 +91,7 @@ impl Config {
     }
 
     /// Writes the changed keys into the selected config, leaving every other value of that
-    /// file as it is. Mirrors `Config_Static.SetValues()`, which saves only what the
-    /// user touched.
+    /// file as it is — only what the user touched is saved.
     pub fn save_user(&self) -> Result<(), String> {
         if !self.has_changes() {
             return Ok(());
@@ -114,7 +112,7 @@ impl Config {
             object.insert(
                 "_Metadata".to_string(),
                 Value::Object(serde_json::Map::from_iter([(
-                    "Version".to_string(),
+                    "ConfigVersion".to_string(),
                     Value::from(SPEC_VERSION as f64),
                 )])),
             );
@@ -191,11 +189,11 @@ pub fn read_user_file(path: &Path) -> Result<Option<Value>, String> {
     Ok(Some(value))
 }
 
-/// A layer without readable `_Metadata.Version` counts as current, like the C# reader.
+/// A layer without readable `_Metadata.ConfigVersion` counts as current.
 fn is_compatible(layer: &Value) -> bool {
     let version = layer
         .get("_Metadata")
-        .and_then(|m| m.get("Version"))
+        .and_then(|m| m.get("ConfigVersion"))
         .and_then(Value::as_f64)
         .unwrap_or(SPEC_VERSION as f64);
 

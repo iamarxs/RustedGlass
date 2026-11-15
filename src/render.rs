@@ -1,7 +1,6 @@
 //! Draws bitmaps into a window with GDI: a cached 32-bit DIB section plus a scaled blit.
 //!
-//! The C# viewer draws with `Graphics.DrawImageUnscaledEx` from a `Format32bppPArgb` bitmap. Here
-//! the pixels are packed as BGRA32 (the GDI DIB layout) and scaled with `StretchBlt`.
+//! The pixels are packed as BGRA32 (the GDI DIB layout) and scaled with `StretchBlt`.
 
 use std::sync::Arc;
 

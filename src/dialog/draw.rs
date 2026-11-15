@@ -8,7 +8,12 @@ pub fn draw(dialog: &Dialog, hdc: HDC, width: i32, height: i32) {
         } else {
             settings_width()
         };
-        crate::style::surface(hdc, (4, 4, panel, height - 4), PANEL_COLOR);
+        crate::style::surface(
+            hdc,
+            (4, 4, panel, height - 4),
+            PANEL_COLOR,
+            COLORREF(0x0044_4444),
+        );
         w32::draw_text(hdc, MARGIN, 8, title(dialog), TEXT_HEADING);
         if *dialog == Dialog::Shortcuts {
             draw_shortcuts(hdc, width, height);

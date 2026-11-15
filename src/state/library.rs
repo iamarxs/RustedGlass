@@ -26,8 +26,7 @@ impl State {
     }
 
     /// Turns the random display order on or off, and re-orders the files. A new order starts at
-    /// its first entry, which is what makes the shuffle visible. Starting a slideshow turns it on,
-    /// as the "Shuffle" option of the original slideshow menu does.
+    /// its first entry, which is what makes the shuffle visible. Starting a slideshow turns it on.
     pub fn set_random_order(&mut self, enabled: bool) {
         self.knobs.random_order = enabled;
         self.config

@@ -34,7 +34,7 @@ use std::path::PathBuf;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const HELP: &str = "\
-RustedGlass — the ImageGlass viewer, ported to Rust
+RustedGlass — a fast Windows image viewer
 
 Usage:
   RustedGlass [PATH] [options]
@@ -53,7 +53,7 @@ Options:
   -V, --version         Print the version and exit
 
 Keys:
-  Esc                   Close the panel, then the image, then the window
+  Esc                   Close panel; stop slideshow, then quit; otherwise quit immediately
   F1                    Toggle the shortcut list
   F10                   Toggle the window frame
   F11                   Start or stop the slideshow

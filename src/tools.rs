@@ -39,6 +39,8 @@ pub enum Action {
     ToggleRepeat,
     StartSlideshow,
     StopSlideshow,
+    StopSlideshowAndArmQuit,
+    ToggleSlideshowPause,
     OpenFile,
     /// Replaces the list with the images of a folder.
     OpenFolder,
@@ -205,13 +207,13 @@ pub fn items(state: &State, config: &Config) -> Vec<Item> {
         );
         push(
             Action::RemoveItem,
-            "Remove this item from the list  Ctrl+Del",
+            "Remove this item from the list  Del",
             shown,
             false,
         );
         push(
             Action::DeleteFile,
-            "Send this file to the recycle bin  Del",
+            "Send this file to the recycle bin  Ctrl+Del",
             shown,
             false,
         );
@@ -237,7 +239,7 @@ pub fn items(state: &State, config: &Config) -> Vec<Item> {
         push(Action::ShowInExplorer, "Show it in Explorer", shown, false);
         push(Action::Separator, "", false, false);
 
-        push(Action::CloseImage, "Close this image  Escape", shown, false);
+        push(Action::CloseImage, "Close this image", shown, false);
         push(Action::About, "&About…", true, false);
         push(Action::Quit, "Quit", true, false);
     }

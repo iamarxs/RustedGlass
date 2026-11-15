@@ -16,8 +16,7 @@ impl State {
         }
     }
 
-    /// The zoom mode the drawing actually uses: a manual zoom overrides it, as `IsManualZoom`
-    /// does in the C# view.
+    /// The zoom mode the drawing actually uses: a manual zoom overrides it.
     pub fn active_zoom_mode(&self) -> ZoomMode {
         if self.scale > 0.0 {
             ZoomMode::LockZoom
@@ -26,8 +25,7 @@ impl State {
         }
     }
 
-    /// Picks a zoom mode, clearing a manual zoom. `LockZoom` keeps what is on screen now, which is
-    /// how "Lock zoom ratio" behaves in ImageGlass.
+    /// Picks a zoom mode, clearing a manual zoom. `LockZoom` keeps what is on screen now.
     pub fn select_zoom_mode(&mut self, mode: ZoomMode, area: (u32, u32)) {
         if mode == ZoomMode::LockZoom {
             self.scale = self.factor(area);
@@ -84,7 +82,9 @@ impl State {
         self.message = None;
 
         self.bitmap = None;
-        self.clear_manual_zoom();
+        if self.zoom_mode != ZoomMode::LockZoom {
+            self.clear_manual_zoom();
+        }
         let mut first_failure = failed_frame;
         let mut failures = 0;
         if first_failure.is_some() {
@@ -172,7 +172,9 @@ impl State {
     pub fn frame_delay_ms(&self) -> u32 {
         if self.navigation_pending
             || self.gif.is_none()
-            || (self.slideshow_paused && self.knobs.play_gif_once)
+            || (self.slideshow_paused
+                && self.knobs.play_gif_once
+                && !self.slideshow_paused_by_space)
         {
             return 0;
         }

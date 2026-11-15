@@ -1,7 +1,7 @@
 //! Turning image files into pixels: full images and GIF animation frames.
 //!
-//! Uses the `image` crate rather than Magick.NET/Skia, so the formats `photo.rs`
-//! lists but `image` does not decode (RAW, HEIC, JXL, SVG) are reported as errors.
+//! Uses the `image` crate, so the formats `photo.rs` lists but `image` does not decode
+//! (RAW, HEIC, JXL, SVG) are reported as errors.
 
 use image::ImageDecoder;
 use std::fs;
@@ -49,7 +49,7 @@ pub struct AnimFrame {
     pub delay_ms: u32,
 }
 
-/// ImageGlass animates `.gif` and `.gifv`.
+/// Animated formats: `.gif` and `.gifv`.
 pub fn is_animated(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()),

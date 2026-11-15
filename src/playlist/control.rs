@@ -3,7 +3,7 @@ use windows::Win32::Foundation::LRESULT;
 use windows::Win32::UI::Controls::{
     LVFI_PARTIAL, LVFI_STRING, LVFI_WRAP, LVIF_TEXT, NMLVDISPINFOW, NMLVFINDITEMW,
 };
-/// The list view control, the same one the C# `ImageListView` uses.
+/// The list view control.
 pub(super) unsafe fn create(parent: HWND) -> HWND {
     let created = CreateWindowExW(
         Default::default(),

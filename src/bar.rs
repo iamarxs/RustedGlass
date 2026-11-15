@@ -8,15 +8,15 @@ use std::cell::{Cell, RefCell};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::Graphics::Gdi::HGDIOBJ;
+use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ};
 use windows::Win32::UI::Controls::{DRAWITEMSTRUCT, ODS_DISABLED, ODS_FOCUS, ODS_SELECTED};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, SendMessageW, BS_OWNERDRAW, HMENU, WINDOW_STYLE, WM_MOUSEMOVE,
-    WM_SETFONT, WS_CHILD, WS_DISABLED, WS_TABSTOP, WS_VISIBLE,
+    CreateWindowExW, DestroyWindow, SendMessageW, BS_OWNERDRAW, HMENU, WINDOW_STYLE, WM_ERASEBKGND,
+    WM_MOUSEMOVE, WM_SETFONT, WS_CHILD, WS_DISABLED, WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::config::Config;
@@ -99,6 +99,7 @@ pub fn action(id: usize) -> Option<Action> {
 /// Take the bar's buttons away. Done before a panel is opened so that its controls are the only
 /// children on the window, and whenever the bar is hidden.
 pub fn destroy() {
+    HOVERED.set(HWND(std::ptr::null_mut()));
     tooltip::destroy();
     let handles = BUTTONS.with(|stored| stored.replace(Vec::new()));
     for (_, _, _, _, handle) in handles {
@@ -141,6 +142,11 @@ fn rebuild(hwnd: HWND, layout: &[(i32, i32, Item)]) {
             continue;
         };
         unsafe {
+            // Clip the child window itself so the image shows through its rounded corners.
+            let region = CreateRoundRectRgn(0, 0, *buttons, BUTTON_HEIGHT, 10, 10);
+            if !region.is_invalid() && SetWindowRgn(handle, Some(region), true) == 0 {
+                let _ = DeleteObject(region.into());
+            }
             let _ = SendMessageW(
                 handle,
                 WM_SETFONT,
@@ -187,17 +193,12 @@ pub unsafe fn draw(lparam: LPARAM) -> bool {
         crate::style::CONTROL
     };
     unsafe {
-        w32::fill_rect(
-            item.hDC,
-            rect.left,
-            rect.top,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
-            crate::paint::BACKGROUND,
-        );
+        // Rounded in the draw itself: the erase is suppressed in button_proc, so the corners are
+        // never painted here and the image behind the button shows through them.
         crate::style::surface(
             item.hDC,
             (rect.left, rect.top, rect.right, rect.bottom),
+            fill,
             fill,
         );
         if checked || item.itemState.0 & ODS_FOCUS.0 != 0 {
@@ -229,8 +230,15 @@ unsafe extern "system" fn button_proc(
     _: usize,
 ) -> LRESULT {
     unsafe {
+        if msg == WM_ERASEBKGND {
+            // A full-rect erase would paint the rounded corners square; leave them to the parent.
+            return LRESULT(1);
+        }
         if msg == WM_MOUSEMOVE && HOVERED.get() != hwnd {
-            HOVERED.set(hwnd);
+            let previous = HOVERED.replace(hwnd);
+            if !previous.0.is_null() {
+                w32::invalidate(previous);
+            }
             let _ = TrackMouseEvent(&mut TRACKMOUSEEVENT {
                 cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                 dwFlags: TME_LEAVE,

@@ -1,6 +1,6 @@
 use super::*;
-/// Full screen: the frame goes away and the window covers the screen, the way the C# viewer does
-/// `ToggleWindowStyle` does it. Turning it off goes back to the rectangle remembered on the way in.
+/// Full screen: the frame goes away and the window covers the screen. Turning it off goes back
+/// to the rectangle remembered on the way in.
 pub fn set_fullscreen(hwnd: HWND, on: bool) {
     unsafe {
         state::with_state(|state| {

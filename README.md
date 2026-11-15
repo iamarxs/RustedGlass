@@ -11,38 +11,39 @@ Get a prebuilt binary from the [releases page](https://github.com/iamarxs/Rusted
 ## Features
 
 - Open individual images, browse folders, or drag and drop files, folders, and playlists. Browse with the keyboard, mouse wheel, or toolbar.
-- Minimal interface. Optionally hidable toolbar, a simple settings menu and all functionality available through keyboard shortcuts and the right-click menu.
+- Minimal interface. Optionally hidable toolbar and a borderless mode, a simple settings menu and all functionality available through keyboard shortcuts and the right-click menu.
+- Switch between framed, borderless, and fullscreen views, or keep the viewer on top. Window position and size are restored on restart.
 - View JPEG, PNG, WebP, TIFF, BMP, GIF, ICO, QOI, DDS, HDR, TGA, and Netpbm images. Animated GIFs play automatically.
 - Zoom, pan, and rotate images. Embedded EXIF orientation is applied automatically.
-- Inspect an image's full path, file size, dimensions, detected format, and available EXIF details. Copy the displayed frame to the clipboard at its native resolution.
-- Run slideshows with fixed or random intervals, shuffle, repeat, and an option to let animated GIFs play through at least once.
+- Inspect an image's full path, file size, dimensions, detected format, and available EXIF details. Copy the displayed image to the clipboard at its native resolution.
+- Run slideshows with fixed or random intervals, shuffle, repeat, and with an option to let animated GIFs play through at least once.
 - Build and reorder playlists with drag and drop, sort by name, and add the same image more than once. Save and reopen `.rgpl` playlists with relative paths.
 - Rename, copy, move, and recycle files or reveal them in Explorer. Copy and move use numbered filenames when the destination already contains a file with the same name.
-- Switch between framed, borderless, and fullscreen views, hide the toolbar, or keep the viewer on top. Window position and size are restored on restart.
 - Browse rapidly with a cache for recently decoded still images.
 - Keep settings in a portable JSON file beside the executable, select another file with `--config`, or override settings for a single run.
 - **F1** for the grouped keyboard shortcut list.
 
-## Open and browse images
+## Controls
 
-- Press **O** to choose one or more images, or **F** to choose a folder. You can also drop files or a folder onto the window.
-- Use the **arrow keys**, **Space**, or the **mouse wheel** to browse. **Home** and **End** jump to the first and last image. Rapid navigation loads the final selection after a short pause. Recently decoded images are cached in memory.
-- Press **0** to fit the whole image. Use **+**, **−**, or **Ctrl + wheel** to zoom. **1–6** select Auto, Lock, Width, Height, Fit, and Fill. To pan a zoomed image, enable **Drag the image to move it** in Settings, then drag the image.
-- Press **R** to rotate the displayed image 90° or **I** to inspect its path, size, dimensions, detected format, and available EXIF details.
+| Key                                                   | Action                                                                                                                                                |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **F1**                                                | Open the full keyboard shortcuts listing.                                                                                                             |
+| **O** / **F**                                         | Open images or a folder — or drag and drop files, folders, and playlists onto the window.                                                             |
+| **Arrows**, **Wheel up/down**                         | Browse.                                                                                                                                               |
+| **Home** / **End**                                    | Jump to the first and last image. Rapid navigation loads the final selection after a short pause; recently decoded images are cached.                 |
+| **0**, **+**/**−**, **Ctrl + Wheel up/down**, **1–6** | Fit, zoom, and zoom modes (Auto, Lock, Width, Height, Fit, Fill). With **Drag the image to move it** enabled in Settings, drag to pan a zoomed image. |
+| **Space**                                             | Default mode: Next image / Slideshow mode: Pause slideshow                                                                                            |
+| **R**                                                 | Rotate 90°                                                                                                                                            |
+| **I**                                                 | Inspect path, size, dimensions, format, and EXIF details                                                                                              |
+| **L**                                                 | Toggle the playlist.                                                                                                                                  |
+| **T**                                                 | Show/hide the toolbar.                                                                                                                                |
+| **F10**                                               | Framed ↔ borderless. Drag near the top to move a borderless window; drag its edges to resize.                                                         |
+| **F11**                                               | Start or stop the slideshow.                                                                                                                          |
+| **F12**                                               | Fullscreen.                                                                                                                                           |
+| **S** or **Ctrl + P**                                 | Open Settings.                                                                                                                                        |
+| **Esc**                                               | Close the active panel or playlist; stop an active slideshow with a notice, then press again to quit. Otherwise quit immediately.                     |
 
-## Window and slideshow controls
-
-| Control               | Action                                                                 |
-| --------------------- | ---------------------------------------------------------------------- |
-| **F10**               | Switch between a framed and borderless window.                         |
-| **Drag near the top** | Move the borderless window. Drag the outer edges or corners to resize. |
-| **F12**               | Enter or exit fullscreen.                                              |
-| **T**                 | Show or hide the toolbar.                                              |
-| **F11**               | Start or stop the slideshow.                                           |
-| **S** or **Ctrl + P** | Open Settings.                                                         |
-| **Esc**               | Close the active panel or playlist, then the image, then the window.   |
-
-Use **Shuffle** or **Ctrl + A** for random browsing order. Toggle **Repeat** to loop the slideshow. In Settings, enter the minimum and maximum seconds per image. Equal values give a fixed duration. Different values give a random whole-second duration within that range per image. **During slideshow, play a GIF file at least once** is on by default. It waits for one complete playback if the GIF runs longer than the selected interval. Turn it off to advance on the slideshow timer alone. Opening the playlist pauses an active slideshow. Closing it resumes playback.
+Use **Shuffle** or **Ctrl + A** for random browsing order. Toggle **Repeat** to loop the slideshow. In Settings, enter the minimum and maximum seconds per image: equal values give a fixed duration, different values a random whole-second duration per image. **During slideshow, play a GIF file at least once** is on by default; it waits for one complete playback if the GIF runs longer than the interval. Opening the playlist pauses an active slideshow; closing it resumes playback.
 
 ## Manage playlists and files
 
@@ -65,7 +66,7 @@ From PowerShell in the folder containing `RustedGlass.exe`:
 .\RustedGlass.exe "./Pictures/Weekend.rgpl" --fullscreen
 .\RustedGlass.exe "./Pictures" -p:SlideshowInterval=8
 .\RustedGlass.exe --config "./Settings/viewer.json" "./Pictures"
-.\RustedGlass.exe --help | Out-Host
+.\RustedGlass.exe --help
 ```
 
 Use `--maximized` (`-m`), `--fullscreen` (`-f`), or `--topmost` (`-t`) to control the startup window. Use `-p:Key=value` for a setting override for that run.
@@ -87,3 +88,7 @@ Cargo downloads the pinned dependencies on the first build. The script writes th
 ## Icons used
 
 The app uses icons provided by [Tabler](https://tabler.io/icons) ([GitHub](https://github.com/tabler/tabler-icons)).
+
+## License
+
+MIT License, see LICENSE.

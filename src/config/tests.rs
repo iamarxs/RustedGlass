@@ -47,7 +47,7 @@ fn an_old_user_layer_is_dropped_and_reported() {
     write_json(
         &dir,
         CONFIG_USER,
-        r#"{"_Metadata":{"Version":9.0},"ZoomSpeed":9}"#,
+        r#"{"_Metadata":{"ConfigVersion":0.5},"ZoomSpeed":9}"#,
     );
 
     let path = dir.join(CONFIG_USER);
@@ -69,7 +69,7 @@ fn saving_writes_only_changed_keys_and_keeps_the_rest() {
     write_json(
         &dir,
         CONFIG_USER,
-        r#"{"_Metadata":{"Version":10.0},"ColorProfile":"srgb","SHOWGALLERY":true,"showgallery":true,"ZoomSpeed":5}"#,
+        r#"{"_Metadata":{"ConfigVersion":1.0},"ColorProfile":"srgb","SHOWGALLERY":true,"showgallery":true,"ZoomSpeed":5}"#,
     );
     let mut cfg = Config::load(dir.join(CONFIG_USER), &["-p:ZoomSpeed=9".to_string()]);
     assert!(!cfg.has_changes(), "loading changes nothing");
@@ -114,7 +114,7 @@ fn saving_a_missing_file_creates_it_with_metadata() {
     let written = read_file(&dir.join(CONFIG_USER)).expect("created user file");
     assert_eq!(written["ThumbnailSize"], Value::from(96u64));
     assert_eq!(
-        written["_Metadata"]["Version"],
+        written["_Metadata"]["ConfigVersion"],
         Value::from(SPEC_VERSION as f64)
     );
 

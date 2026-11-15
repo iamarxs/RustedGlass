@@ -6,9 +6,13 @@ impl State {
     /// Runs from the image on screen, in the order the list has. `Shuffle` and `Repeat` are the
     /// user's own settings now, so starting never changes them.
     pub fn start_slideshow(&mut self) {
+        if self.photos.is_empty() {
+            return;
+        }
         self.slide_revision = self.slide_revision.wrapping_add(1);
         self.slideshow_elapsed = false;
         self.slideshow_paused = self.playlist_visible;
+        self.slideshow_paused_by_space = false;
         self.slideshow_running = !self.playlist_visible;
         let (from, to) = self.knobs.slideshow_bounds();
         let interval = if to > from {
@@ -26,6 +30,7 @@ impl State {
     pub fn stop_slideshow(&mut self) {
         self.slideshow_elapsed = false;
         self.slideshow_paused = false;
+        self.slideshow_paused_by_space = false;
         self.slideshow_running = false;
         self.notice = Some(String::from("Slideshow stopped"));
     }
@@ -36,14 +41,31 @@ impl State {
         if self.slideshow_running {
             self.slideshow_elapsed = false;
             self.slideshow_paused = true;
+            self.slideshow_paused_by_space = false;
             self.slideshow_running = false;
         }
     }
 
     pub fn resume_slideshow(&mut self) {
-        if self.slideshow_paused {
+        if self.slideshow_paused && !self.playlist_visible {
             self.slideshow_paused = false;
+            self.slideshow_paused_by_space = false;
             self.slideshow_running = true;
+        }
+    }
+
+    pub fn toggle_slideshow_pause(&mut self) {
+        if self.playlist_visible {
+            return;
+        }
+        if self.slideshow_running {
+            self.pause_slideshow();
+            self.slideshow_paused_by_space = true;
+            self.notice = Some(String::from("Slideshow paused"));
+        } else if self.slideshow_paused {
+            self.resume_slideshow();
+            self.slideshow_paused_by_space = false;
+            self.notice = Some(String::from("Slideshow resumed"));
         }
     }
 
@@ -149,6 +171,13 @@ mod tests {
         std::fs::write(&next, b"P6\n1 1\n255\n\xff\x00\x00").unwrap();
         state.photos.files = vec![path.clone(), next.clone()];
         state.load_current();
+        state.start_slideshow();
+        state.toggle_slideshow_pause();
+        assert_eq!(state.frame_delay_ms(), 20);
+        let revision = state.frame_revision;
+        state.advance_frame();
+        assert!(state.frame_revision > revision);
+        state.toggle_slideshow_pause();
         state.start_slideshow();
         state.slideshow_elapsed = true;
         for _ in 0..104 {

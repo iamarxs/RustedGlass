@@ -1,9 +1,8 @@
-//! Zoom modes, mirroring `ZoomMode` (`UI/Viewer/ViewerControl_Enums.cs`) and
-//! `Viewer.CalculateZoomFactor` (`ViewerControl_ZoomAndPan.cs`).
+//! Zoom modes.
 //!
 //! A mode describes how the drawing factor is derived from the window size, so a resize keeps
 //! behaving the way the user picked. A manual zoom (wheel, `+`/`-`) overrides the mode until the
-//! mode changes or a new image is loaded, which is `IsManualZoom` in the C# view.
+//! mode changes or a new image is loaded.
 
 /// How the image is scaled into the viewer area.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,8 +17,7 @@ pub enum ZoomMode {
     ScaleToFill,
 }
 
-/// The modes in the order the `1`..`6` hotkeys and the menu use, as in
-/// `AppAPIProvider_Hotkeys.cs`.
+/// The modes in the order the `1`..`6` hotkeys and the menu use.
 pub const MODES: [ZoomMode; 6] = [
     ZoomMode::AutoZoom,
     ZoomMode::LockZoom,
@@ -54,7 +52,7 @@ impl ZoomMode {
         }
     }
 
-    /// Reads a config value; an unknown name falls back to the C# default `AutoZoom`.
+    /// Reads a config value; an unknown name falls back to the default `AutoZoom`.
     pub fn parse(text: &str) -> Option<ZoomMode> {
         MODES
             .into_iter()
@@ -70,11 +68,10 @@ impl ZoomMode {
     }
 }
 
-/// The factor to draw `bitmap` with in `area`, matching `CalculateZoomFactor`.
+/// The factor to draw `bitmap` with in `area`.
 ///
 /// `locked` is the factor kept by `LockZoom`, and what stays in use when a size is unknown.
-/// The C# version multiplies by the DPI scale so that 100% means device-independent pixels;
-/// this app is system-DPI-aware and draws in physical pixels, so 1.0 is the file's own size.
+/// The app is system-DPI-aware and draws in physical pixels, so 1.0 is the file's own size.
 pub fn factor(mode: ZoomMode, bitmap: (u32, u32), area: (u32, u32), locked: f64) -> f64 {
     let (bw, bh) = (bitmap.0 as f64, bitmap.1 as f64);
     if bw == 0.0 || bh == 0.0 || area.0 == 0 || area.1 == 0 {
@@ -95,8 +92,7 @@ pub fn factor(mode: ZoomMode, bitmap: (u32, u32), area: (u32, u32), locked: f64)
 }
 
 /// How much one wheel notch or one zoom key press multiplies the zoom by, from the `ZoomSpeed`
-/// setting (`0` = auto), mirroring the increment of `ImageViewZoomAndPan.cs`: the smaller that
-/// setting, the smaller each step.
+/// setting (`0` = auto): the smaller that setting, the smaller each step.
 pub fn zoom_step(zoom_speed: f64, delta: i32) -> f64 {
     let speed = zoom_speed.clamp(0.0, 499.0);
     let step = (delta.abs() as f64 / (500.0 - speed + 1.0)).clamp(0.01, 1.0);
@@ -145,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn config_names_and_hotkeys_match_the_csharp_names() {
+    fn config_names_and_hotkeys_match_the_expected_names() {
         assert_eq!(ZoomMode::parse("scaleToFill"), Some(ZoomMode::ScaleToFill));
         assert_eq!(ZoomMode::parse("  LockZoom "), Some(ZoomMode::LockZoom));
         assert_eq!(ZoomMode::parse("nonsense"), None);

@@ -33,7 +33,7 @@ pub fn install(state: State) {
 
 /// The settings the viewer behaves by, read from the config.
 ///
-/// The key names and defaults are those of the C# `Config.cs`, except the ones this port adds:
+/// Key names and defaults are those of the config format, except the app's own keys:
 /// `EnableToolBar`, `EnableRandomDisplayOrder` and `MoveToFolder`.
 pub struct Knobs {
     pub zoom_mode: ZoomMode,
@@ -60,7 +60,7 @@ pub struct Knobs {
 }
 
 impl Knobs {
-    /// Reads the settings, using the key names and defaults of the C# `ImageGlassConfig`.
+    /// Reads the settings, using the documented key names and defaults.
     pub fn from(config: &Config) -> Knobs {
         Knobs {
             // The mode decides the factor on load and on resize; only a locked zoom keeps one.
@@ -70,7 +70,7 @@ impl Knobs {
             auto_sibling_dir: config.get_bool("EnableAutoSwitchSiblingDir", false),
             free_pan: config.get_bool("EnableFreePan", false),
             pan_speed: config.get_f64("PanSpeed", 20.0).max(1.0) as i32,
-            // `0` is "auto" in C#; `zoom::zoom_step` turns it into a factor per press.
+            // `0` is "auto"; `zoom::zoom_step` turns it into a factor per press.
             zoom_speed: config.get_f64("ZoomSpeed", 0.0),
             start_fullscreen: config.get_bool("EnableFullScreen", false),
             start_maximized: config.get_bool("EnableMainWindowMaximized", false),
@@ -129,6 +129,8 @@ pub struct State {
     pub slideshow_running: bool,
     /// A slideshow the playlist put on hold: it is started again when the list is closed.
     pub slideshow_paused: bool,
+    pub slideshow_paused_by_space: bool,
+    pub slideshow_stopped_by_escape: bool,
     pub slideshow_elapsed: bool,
     pub pending: Option<(Pending, PathBuf)>,
     /// Which child-control panel is open right now.
@@ -170,6 +172,8 @@ impl State {
             slide_revision: 0,
             slideshow_running: false,
             slideshow_paused: false,
+            slideshow_paused_by_space: false,
+            slideshow_stopped_by_escape: false,
             slideshow_elapsed: false,
             pending: None,
             dialog: Dialog::None,

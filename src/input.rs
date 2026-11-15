@@ -39,6 +39,9 @@ pub fn apply_action(hwnd: HWND, action: Action) {
     if settle_file_selection(hwnd, action) {
         return;
     }
+    if action != Action::StopSlideshowAndArmQuit {
+        state::with_state(|state| state.slideshow_stopped_by_escape = false);
+    }
     let screen = unsafe { w32::client_size(hwnd) };
 
     match action {
@@ -60,6 +63,9 @@ pub fn apply_action(hwnd: HWND, action: Action) {
         }
         Action::CloseImage => {
             state::with_state(|state| {
+                if state.slideshow_running || state.slideshow_paused {
+                    state.stop_slideshow();
+                }
                 state.bitmap = None;
                 state.gif = None;
                 state.navigation_pending = false;
@@ -67,6 +73,7 @@ pub fn apply_action(hwnd: HWND, action: Action) {
                     "Nothing shown: press F for a folder, or drop one here",
                 ));
             });
+            view::expire_notice(hwnd);
             view::refresh(hwnd);
         }
         Action::ToggleToolBar => {
@@ -97,7 +104,9 @@ pub fn apply_action(hwnd: HWND, action: Action) {
                     playlist::show(hwnd, &state.photos, width, height);
                 } else {
                     playlist::hide();
-                    state.resume_slideshow();
+                    if !state.slideshow_paused_by_space {
+                        state.resume_slideshow();
+                    }
                 }
             });
             view::refresh(hwnd);
@@ -135,14 +144,22 @@ pub fn apply_action(hwnd: HWND, action: Action) {
             });
             view::refresh(hwnd);
         }
-        Action::StartSlideshow | Action::StopSlideshow => {
+        Action::StartSlideshow | Action::StopSlideshow | Action::StopSlideshowAndArmQuit => {
             state::with_state(|state| {
                 if action == Action::StartSlideshow {
                     state.start_slideshow();
                 } else {
                     state.stop_slideshow();
+                    if action == Action::StopSlideshowAndArmQuit {
+                        state.slideshow_stopped_by_escape = true;
+                    }
                 }
             });
+            view::expire_notice(hwnd);
+            view::refresh(hwnd);
+        }
+        Action::ToggleSlideshowPause => {
+            state::with_state(|state| state.toggle_slideshow_pause());
             view::expire_notice(hwnd);
             view::refresh(hwnd);
         }

@@ -57,7 +57,7 @@ pub fn run(config_path: PathBuf, args: &[String]) -> Result<(), String> {
         set_fullscreen(hwnd, true);
     }
     if starts_slideshow {
-        // `EnableSlideshow` starts the loop with the window, as the C# viewer does.
+        // `EnableSlideshow` starts the loop with the window.
         input::apply_action(hwnd, tools::Action::StartSlideshow);
     }
     if let Some(notice) = startup_notice {

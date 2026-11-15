@@ -1,7 +1,7 @@
 //! The settings panel and the rename / copy / move prompt.
 //!
-//! The original is a XAML settings window with hundreds of options. This is the same idea at
-//! Win32 size: the settings the viewer reads are rows of check boxes and text fields, and a check
+//! The same idea at Win32 size: the settings the viewer reads are rows of check boxes and
+//! text fields, and a check
 //! box *is* its config key, so a click applies at once and `Save & Close` writes the changed keys
 //! with `Config::save_user`. The fields are real child controls, so typing, focus and check marks
 //! are the system's; the panel background, the labels of number fields and the button are painted.
