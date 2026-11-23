@@ -43,11 +43,9 @@ pub struct PhotoList {
     pub files: Vec<PathBuf>,
     pub index: usize,
     pub formats: Vec<String>,
-    /// The visible order, as indices into `files`. Empty means `files` order;
-    /// the randomizer fills it and clearing it returns to the names. `index` is always a
-    /// position in this visible order, so browsing and the slideshow follow the
-    /// shuffle with no extra handling.
+    /// The playlist row order, as indices into `files`. Empty means `files` order.
     pub order: Vec<usize>,
+    random_pass: Option<Vec<usize>>,
 }
 
 impl PhotoList {
@@ -58,6 +56,7 @@ impl PhotoList {
             index: 0,
             formats: image_formats(),
             order: Vec::new(),
+            random_pass: None,
         }
     }
 
@@ -87,6 +86,7 @@ impl PhotoList {
             index,
             formats,
             order: Vec::new(),
+            random_pass: None,
         }
     }
 
@@ -145,6 +145,7 @@ impl PhotoList {
 
     /// Randomizes the visible order. `seed` is passed in so tests are repeatable.
     pub fn shuffle(&mut self, seed: u64) {
+        self.reset_random_pass();
         let mut rng = XorShift64 {
             state: seed | 0x9d_df_e1_ed_c4_a1_95_65,
         };
@@ -165,6 +166,9 @@ impl PhotoList {
             .cloned()
             .collect();
         let count = added.len();
+        if count != 0 {
+            self.reset_random_pass();
+        }
         if !self.order.is_empty() {
             self.order
                 .extend(self.files.len()..self.files.len() + count);
@@ -180,6 +184,7 @@ impl PhotoList {
             index: 0,
             formats,
             order: Vec::new(),
+            random_pass: None,
         };
         list.add_files(paths);
         list.sort_by_name(false);
@@ -195,6 +200,7 @@ impl PhotoList {
     /// Removes the entry at a visible position; the entry after it takes its place.
     pub fn remove_at(&mut self, position: usize) -> Option<PathBuf> {
         let file_index = self.at(position)?;
+        self.reset_random_pass();
         let removed = self.files.remove(file_index);
         self.order.retain(|index| *index != file_index);
         for index in &mut self.order {
@@ -221,6 +227,7 @@ impl PhotoList {
         if self.at(position).is_none() {
             return None;
         }
+        self.reset_random_pass();
         self.index = position;
         self.current()
     }
@@ -232,7 +239,6 @@ impl PhotoList {
         step: i32,
         loop_back: bool,
         auto_sibling_dir: bool,
-        shuffle_seed: Option<u64>,
         (include_hidden, recurse): (bool, bool),
     ) -> bool {
         let count = self.files.len() as i32;
@@ -261,10 +267,8 @@ impl PhotoList {
             ) {
                 self.files = files;
                 self.order.clear();
+                self.reset_random_pass();
                 self.index = 0;
-                if let Some(seed) = shuffle_seed {
-                    self.shuffle(seed);
-                }
                 if step < 0 {
                     self.index = self.files.len().saturating_sub(1);
                 }
@@ -287,3 +291,4 @@ pub use folder::collect;
 use folder::{sibling_images, sort_names};
 
 mod order;
+mod random;

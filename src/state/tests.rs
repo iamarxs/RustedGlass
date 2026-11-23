@@ -26,6 +26,37 @@ fn defaults_are_as_expected() {
 }
 
 #[test]
+fn only_startup_image_and_playlist_files_use_the_maximize_preference() {
+    let config = crate::test_path("open-maximized.json");
+    let image = crate::test_path("open-maximized.PNG");
+    let playlist = crate::test_path("open-maximized.rgpl");
+    let folder = crate::test_path("open-maximized-folder.jpg");
+    std::fs::create_dir_all(&folder).unwrap();
+    ::image::RgbImage::new(1, 1).save(&image).unwrap();
+    std::fs::write(&playlist, image.file_name().unwrap().to_str().unwrap()).unwrap();
+
+    let load = |path: &Path| {
+        State::new(config.clone(), &[path.to_str().unwrap().to_string()]).start_maximized
+    };
+    std::fs::write(&config, "{}").unwrap();
+    assert!(!load(&image));
+    std::fs::write(&config, r#"{"OpenImagesMaximized":true}"#).unwrap();
+    assert!(load(&image));
+    assert!(load(&playlist));
+    assert!(!load(&folder));
+    assert!(!State::new(config.clone(), &[]).start_maximized);
+
+    std::fs::write(
+        &config,
+        r#"{"EnableMainWindowMaximized":true,"OpenImagesMaximized":true}"#,
+    )
+    .unwrap();
+    assert!(load(&image));
+    assert!(load(&folder));
+    assert!(State::new(config, &[]).start_maximized);
+}
+
+#[test]
 fn a_manual_zoom_overrides_the_zoom_mode() {
     let mut state = State::new(crate::test_path("unused-config.json"), &[]);
     state.zoom_mode = ZoomMode::ScaleToFit;
@@ -140,54 +171,8 @@ fn listed_rows_go_in_any_order_and_a_repeated_row_takes_one_entry() {
     std::fs::remove_dir(dir).unwrap();
 }
 
-#[test]
-fn a_repeating_slideshow_wraps_and_shows_each_image_once_per_pass() {
-    let mut state = three_images();
-    let dir = import_test_dir("repeat-slideshow");
-    let image = test_image(&dir, "slide.png");
-    state.photos.files = vec![image.clone(); 3];
-    state.set_random_order(true);
-    state.start_slideshow();
-    assert!(
-        !state.photos.order.is_empty(),
-        "a shuffled pass has an order"
-    );
-
-    // The pass is a permutation of the list: each image is in it exactly once.
-    let mut pass = state.photos.order.clone();
-    pass.sort_unstable();
-    assert_eq!(pass, vec![0, 1, 2], "each image once per pass");
-
-    // Three steps: the rest of the pass and the wrap back to its start.
-    for _ in 0..3 {
-        assert!(state.step(1));
-    }
-    assert_eq!(state.photos.index, 0, "Repeat starts the pass again");
-    assert!(state.slideshow_running);
-    std::fs::remove_file(image).unwrap();
-    std::fs::remove_dir(dir).unwrap();
-}
-
-#[test]
-fn turning_the_random_order_off_restores_the_names_and_keeps_the_image() {
-    let mut state = State::new(crate::test_path("unused-config.json"), &[]);
-    let dir = import_test_dir("shuffle");
-    let a = test_image(&dir, "a.png");
-    let b = test_image(&dir, "b.png");
-    state.photos.files = vec![b.clone(), a.clone()];
-    state.toggle_random_order();
-    assert!(state.config.get_bool("EnableRandomDisplayOrder", false));
-    let shown = state.photos.current().cloned();
-    state.toggle_random_order();
-    assert!(state.photos.order.is_empty());
-    assert!(shown.is_some());
-    assert_eq!(state.photos.current(), shown.as_ref());
-    std::fs::remove_file(a).unwrap();
-    std::fs::remove_file(b).unwrap();
-    std::fs::remove_dir(dir).unwrap();
-}
-
 mod imports;
+mod shuffle;
 
 fn test_image(dir: &Path, name: &str) -> PathBuf {
     let path = dir.join(name);
@@ -269,7 +254,7 @@ fn a_file_prompt_cannot_rename_a_different_selection() {
     let first = PathBuf::from("a.png");
     let second = PathBuf::from("b.png");
     state.photos.files = vec![first.clone(), second];
-    state.pending = Some((Pending::Rename, first));
+    state.pending = Some(first);
     state.photos.index = 1;
     assert!(state
         .apply_pending("renamed")

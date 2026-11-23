@@ -1,41 +1,12 @@
 use super::*;
 
 impl State {
-    pub(super) fn load_new_order(&mut self) {
-        if self.knobs.random_order {
-            self.photos.shuffle(random_seed());
-        }
-        self.load_current();
-    }
-
-    /// Writes the display order: by name, or shuffled, keeping the shown entry where it is.
-    pub fn apply_order(&mut self) {
-        let shown = self.photos.file_index(self.photos.index);
-        if self.knobs.random_order {
-            self.photos.shuffle(random_seed());
-        } else {
-            // Clearing the order returns to the names; `index` is put back below.
-            self.photos.order.clear();
-        }
-        if let Some(index) = shown {
-            self.photos.index = self
-                .photos
-                .position_of_file(index)
-                .unwrap_or(self.photos.index);
-        }
-    }
-
-    /// Turns the random display order on or off, and re-orders the files. A new order starts at
-    /// its first entry, which is what makes the shuffle visible. Starting a slideshow turns it on.
+    /// Changes how the next image is picked while preserving the current image and playlist.
     pub fn set_random_order(&mut self, enabled: bool) {
         self.knobs.random_order = enabled;
         self.config
             .set("EnableRandomDisplayOrder", Value::Bool(enabled));
-        self.apply_order();
-        if enabled {
-            self.photos.index = 0;
-            self.load_current();
-        }
+        self.photos.reset_random_pass();
     }
 
     /// A drop expands folders to their images and playlist files to their rows (each playlist
@@ -61,7 +32,7 @@ impl State {
         let files = self.filter_image_types(self.expand_paths(paths.to_vec()));
         if !files.is_empty() {
             self.photos = PhotoList::from_files(&files, photo::image_formats());
-            self.load_new_order();
+            self.load_current();
         }
     }
 
@@ -71,7 +42,7 @@ impl State {
         if !files.is_empty() {
             self.photos = PhotoList::empty();
             self.photos.files = files;
-            self.load_new_order();
+            self.load_current();
         }
     }
 
@@ -81,7 +52,7 @@ impl State {
         let was_empty = self.photos.is_empty();
         let added = self.photos.add_files(&files);
         if added > 0 && was_empty {
-            self.load_new_order();
+            self.load_current();
             return self.photos.len();
         }
         added
@@ -123,7 +94,7 @@ impl State {
         if loaded {
             self.photos = PhotoList::empty();
             self.photos.files = files;
-            self.load_new_order();
+            self.load_current();
             if self.message.is_none() {
                 self.message = Some(format!(
                     "Opened {} images from {}",
@@ -150,12 +121,8 @@ impl State {
         Ok(count)
     }
 
-    /// Sorts the rows by name; `descending` reverses them. Sorting turns the random order off in
-    /// the config as well, otherwise the next pass of a slideshow would shuffle the rows again.
+    /// Sorts the playlist rows by name; `descending` reverses them.
     pub fn sort_by_name(&mut self, descending: bool) {
-        self.config
-            .set("EnableRandomDisplayOrder", Value::Bool(false));
-        self.reload_knobs();
         self.photos.sort_by_name(descending);
     }
 
@@ -225,24 +192,16 @@ impl State {
         Ok(target)
     }
 
-    /// Applies the rename or copy the prompt asked for, and keeps the playlist in step.
+    /// Renames the image for which the prompt was opened.
     pub fn apply_pending(&mut self, text: &str) -> Result<PathBuf, String> {
-        let (pending, path) = self.pending.as_ref().ok_or("No file operation is open")?;
+        let path = self.pending.as_ref().ok_or("No rename is open")?;
         if self.navigation_pending || self.photos.current() != Some(path) {
             return Err("Image selection changed. Open the file command again.".into());
         }
-        let target = pending.apply(path, text)?;
-
-        match pending {
-            Pending::Rename => {
-                for entry in &mut self.photos.files {
-                    if entry == path {
-                        entry.clone_from(&target);
-                    }
-                }
-            }
-            Pending::CopyTo(_) => {
-                self.add_files(std::slice::from_ref(&target));
+        let target = fileops::rename(path, text)?;
+        for entry in &mut self.photos.files {
+            if entry == path {
+                entry.clone_from(&target);
             }
         }
 

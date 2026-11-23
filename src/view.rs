@@ -88,7 +88,7 @@ pub fn run(config_path: PathBuf, args: &[String]) -> Result<(), String> {
 /// that says "something changed, show it again".
 pub fn refresh(hwnd: HWND) {
     unsafe {
-        update_title(hwnd);
+        caption::update(hwnd);
         timers::sync(hwnd);
         layout_controls(hwnd);
         let unreadable = state::with_state(|state| {
@@ -111,7 +111,7 @@ fn layout_controls(hwnd: HWND) {
         if state.dialog == Dialog::Shortcuts {
             dialog::resize_shortcuts((width, height));
         }
-        bar::sync(hwnd, state, &state.config, width as i32);
+        bar::sync(hwnd, state, width as i32);
     });
 }
 
@@ -121,22 +121,6 @@ unsafe fn arm(hwnd: HWND, id: usize, delay: u32) {
     } else {
         let _ = unsafe { SetTimer(Some(hwnd), id, delay, None) };
     }
-}
-
-/// The title bar names the shown file and where it sits in the list.
-unsafe fn update_title(hwnd: HWND) {
-    state::with_state(|state| {
-        let title = match state.photos.current() {
-            Some(path) => format!(
-                "{TITLE} — {} ({}/{})",
-                w32::file_name(path),
-                state.photos.index + 1,
-                state.photos.len()
-            ),
-            None => TITLE.to_string(),
-        };
-        let _ = unsafe { SetWindowTextW(hwnd, PCWSTR(w32::wide(&title).as_ptr())) };
-    });
 }
 
 unsafe fn create_window() -> Result<HWND, String> {
@@ -183,7 +167,7 @@ unsafe fn create_window() -> Result<HWND, String> {
     let start = state::with_state(|state| {
         (
             frame_style(state.is_borderless),
-            state.knobs.start_maximized,
+            state.start_maximized,
             state.knobs.topmost,
             frame::startup_bounds(state.config.window_bounds()),
         )
@@ -199,7 +183,7 @@ unsafe fn create_window() -> Result<HWND, String> {
             },
             PCWSTR(name.as_ptr()),
             PCWSTR(w32::wide(TITLE).as_ptr()),
-            style | WS_VISIBLE,
+            style,
             x,
             y,
             width,
@@ -212,8 +196,7 @@ unsafe fn create_window() -> Result<HWND, String> {
     }
     .map_err(|error| format!("could not create the window: {error}"))?;
     state::with_state(|state| state.normal_rect = unsafe { w32::window_rect(hwnd) });
-    let _ = unsafe { ShowWindow(hwnd, if maximized { SW_MAXIMIZE } else { SW_SHOW }) };
-    // The window is dark, so its title bar is asked to be dark too.
+    // Apply the title-bar preference before Windows draws the first visible frame.
     let dark = 1i32;
     let _ = unsafe {
         DwmSetWindowAttribute(
@@ -223,6 +206,7 @@ unsafe fn create_window() -> Result<HWND, String> {
             4,
         )
     };
+    let _ = unsafe { ShowWindow(hwnd, if maximized { SW_MAXIMIZE } else { SW_SHOW }) };
     Ok(hwnd)
 }
 
@@ -284,6 +268,7 @@ mod frame;
 use frame::frame_style;
 pub use frame::{set_borderless, set_fullscreen};
 
+mod caption;
 mod timers;
 
 #[cfg(test)]

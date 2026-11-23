@@ -56,7 +56,7 @@ fn save_settings(hwnd: HWND) {
 
 /// Hands the picked folder to the path field that asked for it.
 pub(super) fn pick_folder(hwnd: HWND, index: usize) {
-    if let Some(path) = dialog::pick_folder(hwnd) {
+    if let Some(path) = dialog::pick_folder(hwnd, "Choose quick-move destination folder") {
         dialog::set_field_text(BASE_ID + index, &path.display().to_string());
     }
 }

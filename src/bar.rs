@@ -19,10 +19,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_MOUSEMOVE, WM_SETFONT, WS_CHILD, WS_DISABLED, WS_TABSTOP, WS_VISIBLE,
 };
 
-use crate::config::Config;
 use crate::dialog::Dialog;
 use crate::state::State;
 use crate::tools::{self, Action, Item};
+use crate::tooltip::Tooltip;
 use crate::w32;
 
 /// Control ids of the bar's buttons, well away from the panel's ids so a `WM_COMMAND` says which
@@ -39,14 +39,15 @@ thread_local! {
     /// Where the buttons are and what is on them: the layout they were made from.
     static HOVERED: Cell<HWND> = const { Cell::new(HWND(std::ptr::null_mut())) };
     static LAYOUT: RefCell<Vec<(i32, i32, String)>> = const { RefCell::new(Vec::new()) };
+    static TOOLTIP: RefCell<Option<Tooltip>> = const { RefCell::new(None) };
 }
 
 /// Make the bar match the state. Repaints call this, so a layout that has not changed is left
 /// alone: only the checked state and the enable of an existing button are updated, and only when
 /// they differ. That is what keeps the bar from flickering while the pointer moves over it.
-pub fn sync(hwnd: HWND, state: &State, config: &Config, width: i32) {
+pub fn sync(hwnd: HWND, state: &State, width: i32) {
     let wanted = if state.toolbar_visible && state.dialog == Dialog::None {
-        tools::bar_layout(state, config, width)
+        tools::bar_layout(state, width)
     } else {
         Vec::new()
     };
@@ -100,7 +101,7 @@ pub fn action(id: usize) -> Option<Action> {
 /// children on the window, and whenever the bar is hidden.
 pub fn destroy() {
     HOVERED.set(HWND(std::ptr::null_mut()));
-    tooltip::destroy();
+    drop(TOOLTIP.take());
     let handles = BUTTONS.with(|stored| stored.replace(Vec::new()));
     for (_, _, _, _, handle) in handles {
         unsafe {
@@ -114,9 +115,11 @@ fn rebuild(hwnd: HWND, layout: &[(i32, i32, Item)]) {
     destroy();
     let HGDIOBJ(font) = crate::style::font();
     let instance = w32::instance();
-    if !layout.is_empty() {
-        tooltip::create(hwnd);
-    }
+    let mut tooltip = if layout.is_empty() {
+        None
+    } else {
+        Tooltip::new(hwnd, None)
+    };
     for (index, (x, buttons, item)) in layout.iter().enumerate() {
         let text = w32::wide(&item.label);
         let mut style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32);
@@ -166,9 +169,12 @@ fn rebuild(hwnd: HWND, layout: &[(i32, i32, Item)]) {
                 handle,
             ))
         });
-        tooltip::add(hwnd, handle, text);
+        if let Some(tooltip) = &mut tooltip {
+            tooltip.add_control(hwnd, handle, &item.label);
+        }
         unsafe { w32::invalidate(handle) };
     }
+    TOOLTIP.replace(tooltip);
 }
 
 pub unsafe fn draw(lparam: LPARAM) -> bool {
@@ -255,4 +261,3 @@ unsafe extern "system" fn button_proc(
 }
 
 mod icons;
-mod tooltip;

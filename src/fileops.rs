@@ -1,4 +1,4 @@
-//! File operations the tool bar offers: delete, rename, copy to, move to, show in Explorer.
+//! Shell file operations: rename, move, recycle and show in Explorer.
 //!
 //! A delete goes to the recycle bin.
 
@@ -8,7 +8,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use windows::core::PCWSTR;
-use windows::Win32::Storage::FileSystem::{CopyFileW, MoveFileExW, MOVEFILE_COPY_ALLOWED};
+use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_COPY_ALLOWED};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
     COINIT_APARTMENTTHREADED,
@@ -96,7 +96,7 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
         return Ok(target);
     }
 
-    transfer(path, &target, false)
+    transfer(path, &target)
         .map_err(|e| format!("cannot rename {} to {name}: {e}", path.display()))?;
     Ok(target)
 }
@@ -119,14 +119,6 @@ fn reserved_name(name: &str) -> bool {
     })
 }
 
-/// Copies the file into `dir`, choosing a numbered name if needed.
-pub fn copy_to(path: &Path, dir: &Path) -> Result<PathBuf, String> {
-    if dir.as_os_str().is_empty() || !dir.is_dir() {
-        return Err("Enter an existing folder to copy the image to.".into());
-    }
-    transfer_to_folder(path, dir, true)
-}
-
 /// Moves the file into `dir`, choosing a numbered name if needed.
 pub fn move_to(path: &Path, dir: &Path) -> Result<PathBuf, String> {
     let source_dir = path
@@ -142,23 +134,22 @@ pub fn move_to(path: &Path, dir: &Path) -> Result<PathBuf, String> {
             ));
         }
     }
-    transfer_to_folder(path, dir, false)
+    transfer_to_folder(path, dir)
 }
 
-fn transfer_to_folder(path: &Path, dir: &Path, copy: bool) -> Result<PathBuf, String> {
+fn transfer_to_folder(path: &Path, dir: &Path) -> Result<PathBuf, String> {
     let name = path
         .file_name()
         .ok_or_else(|| format!("{path:?} has no file name"))?;
     let mut target = dir.join(name);
     let mut number = 2;
     loop {
-        match transfer(path, &target, copy) {
+        match transfer(path, &target) {
             Ok(()) => return Ok(target),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists || target.is_dir() => {}
             Err(error) => {
-                let verb = if copy { "copy" } else { "move" };
                 return Err(format!(
-                    "cannot {verb} {} to {}: {error}",
+                    "cannot move {} to {}: {error}",
                     path.display(),
                     target.display()
                 ));
@@ -175,7 +166,7 @@ fn transfer_to_folder(path: &Path, dir: &Path, copy: bool) -> Result<PathBuf, St
     }
 }
 
-fn transfer(path: &Path, target: &Path, copy: bool) -> std::io::Result<()> {
+fn transfer(path: &Path, target: &Path) -> std::io::Result<()> {
     fn wide_path(path: &Path) -> std::io::Result<Vec<u16>> {
         let name = path.file_name().ok_or(std::io::ErrorKind::InvalidInput)?;
         let dir = path
@@ -189,14 +180,8 @@ fn transfer(path: &Path, target: &Path, copy: bool) -> std::io::Result<()> {
     let source = wide_path(path)?;
     let target = wide_path(target)?;
     let (source, target) = (PCWSTR(source.as_ptr()), PCWSTR(target.as_ptr()));
-    unsafe {
-        if copy {
-            CopyFileW(source, target, true)
-        } else {
-            MoveFileExW(source, target, MOVEFILE_COPY_ALLOWED)
-        }
-    }
-    .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 & 0xffff))
+    unsafe { MoveFileExW(source, target, MOVEFILE_COPY_ALLOWED) }
+        .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 & 0xffff))
 }
 
 /// Opens the file's folder in Explorer with the file selected (`ShellHelper.ShowInExplorer`).
@@ -208,31 +193,6 @@ pub fn show_in_explorer(path: &Path) -> Result<(), String> {
         CoTaskMemFree(Some(item.cast()));
         result
     })
-}
-
-/// A file operation waiting for the name or folder the user has to type in.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Pending {
-    Rename,
-    CopyTo(PathBuf),
-}
-
-impl Pending {
-    /// What the text field starts with: the current name, or the folder a copy would land in.
-    pub fn prefill(&self, path: &Path) -> String {
-        match self {
-            Pending::Rename => stem(path),
-            Pending::CopyTo(dir) => dir.display().to_string(),
-        }
-    }
-
-    /// Runs the operation with what the user typed. The result is the file the viewer now points at.
-    pub fn apply(&self, path: &Path, text: &str) -> Result<PathBuf, String> {
-        match self {
-            Pending::Rename => rename(path, text),
-            Pending::CopyTo(_) => copy_to(path, Path::new(text.trim())),
-        }
-    }
 }
 
 /// What a rename prompt pre-fills: the name without its extension.

@@ -82,6 +82,11 @@ impl State {
         self.message = None;
 
         self.bitmap = None;
+        self.file_size = self
+            .photos
+            .current()
+            .and_then(|path| path.metadata().ok())
+            .map(|metadata| metadata.len());
         if self.zoom_mode != ZoomMode::LockZoom {
             self.clear_manual_zoom();
         }

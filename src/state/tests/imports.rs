@@ -154,32 +154,35 @@ fn deleting_the_shown_file_removes_all_of_its_rows() {
 }
 
 #[test]
-fn configured_shuffle_applies_on_folder_and_playlist_load() {
+fn configured_shuffle_keeps_folder_and_playlist_rows_in_order() {
     let dir = import_test_dir("shuffle-import");
     let files = ["a.ppm", "b.ppm", "c.ppm"].map(|name| test_image(&dir, name));
     let playlist = dir.join("images.rgpl");
     std::fs::write(&playlist, "c.ppm\na.ppm\nb.ppm\n").unwrap();
     let config = dir.join("rgconfig.json");
     let shuffle = "-p:EnableRandomDisplayOrder=true".to_owned();
-    let assert_shuffled = |state: &State| {
-        let mut order = state.photos.order.clone();
-        order.sort_unstable();
-        assert_eq!(order, [0, 1, 2]);
+    let assert_order = |state: &mut State, first: &Path| {
+        assert!(state.photos.order.is_empty());
         assert_eq!(state.photos.index, 0);
+        assert_eq!(state.photos.current().map(PathBuf::as_path), Some(first));
+        assert!(state.knobs.random_order);
+        assert!(state.step(1));
+        assert_ne!(state.photos.index, 0);
+        assert!(state.photos.order.is_empty());
     };
 
     let mut state = State::new(config.clone(), std::slice::from_ref(&shuffle));
     state.open_folder(&dir);
-    assert_shuffled(&state);
+    assert_order(&mut state, &files[0]);
     state.open_playlist(&playlist).unwrap();
-    assert_shuffled(&state);
+    assert_order(&mut state, &files[2]);
 
-    for path in [&dir, &playlist] {
-        let state = State::new(
+    for (path, first) in [(&dir, &files[0]), (&playlist, &files[2])] {
+        let mut state = State::new(
             config.clone(),
             &[path.display().to_string(), shuffle.clone()],
         );
-        assert_shuffled(&state);
+        assert_order(&mut state, first);
     }
     for file in files.into_iter().chain([playlist]) {
         std::fs::remove_file(file).unwrap();

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::config::{target_path, Config};
 use crate::decode;
 use crate::dialog::Dialog;
-use crate::fileops::{self, Pending};
+use crate::fileops;
 use crate::photo::{self, PhotoList};
 use crate::render::Bitmap;
 use crate::rgpl;
@@ -43,7 +43,6 @@ pub struct Knobs {
     pub pan_speed: i32,
     pub zoom_speed: f64,
     pub start_fullscreen: bool,
-    pub start_maximized: bool,
     pub topmost: bool,
     pub slideshow: bool,
     pub slideshow_seconds: u32,
@@ -53,7 +52,7 @@ pub struct Knobs {
     pub include_hidden: bool,
     pub recurse: bool,
     pub show_toolbar: bool,
-    /// Show the files in a random order instead of by name.
+    /// Pick images at random during navigation and slideshows.
     pub random_order: bool,
     /// Where `M` moves the shown file to. Empty means `M` does nothing.
     pub move_to: PathBuf,
@@ -74,7 +73,6 @@ impl Knobs {
             // `0` is "auto"; `zoom::zoom_step` turns it into a factor per press.
             zoom_speed: config.get_f64("ZoomSpeed", 0.0),
             start_fullscreen: config.get_bool("EnableFullScreen", false),
-            start_maximized: config.get_bool("EnableMainWindowMaximized", false),
             topmost: config.get_bool("EnableWindowTopMost", false),
             slideshow: config.get_bool("EnableSlideshow", false),
             slideshow_seconds: config.get_f64("SlideshowInterval", 5.0).max(1.0) as u32,
@@ -102,6 +100,7 @@ pub struct State {
     pub knobs: Knobs,
     pub photos: PhotoList,
     pub bitmap: Option<Bitmap>,
+    pub file_size: Option<u64>,
     pub animation: Option<decode::Animation>,
     pub frame_revision: u64,
     frame_ms: u32,
@@ -113,6 +112,7 @@ pub struct State {
     pub rotation_turns: usize,
     /// Where the window sat before full screen took over the monitor, so leaving it goes back.
     pub normal_rect: (i32, i32, i32, i32),
+    pub start_maximized: bool,
     /// Whether the window was maximized when the frame went off, so it is put back that way.
     pub was_maximized: bool,
     pub is_fullscreen: bool,
@@ -133,7 +133,7 @@ pub struct State {
     pub slideshow_paused_by_space: bool,
     pub slideshow_stopped_by_escape: bool,
     pub slideshow_elapsed: bool,
-    pub pending: Option<(Pending, PathBuf)>,
+    pub pending: Option<PathBuf>,
     /// Which child-control panel is open right now.
     pub dialog: Dialog,
     pub message: Option<String>,
@@ -148,11 +148,13 @@ impl State {
         let knobs = Knobs::from(&config);
         let toolbar_visible = knobs.show_toolbar;
         let zoom_mode = knobs.zoom_mode;
+        let start_maximized = config.get_bool(crate::config::ALWAYS_MAXIMIZED, false);
         let mut state = State {
             config,
             knobs,
             photos: PhotoList::empty(),
             bitmap: None,
+            file_size: None,
             animation: None,
             frame_revision: 0,
             frame_ms: 0,
@@ -161,6 +163,7 @@ impl State {
             offset: (0, 0),
             rotation_turns: 0,
             normal_rect: (0, 0, 1100, 750),
+            start_maximized,
             was_maximized: false,
             is_fullscreen: false,
             fullscreen_restore: (false, false),
@@ -189,6 +192,10 @@ impl State {
         if let Some(arg) = target_path(args) {
             let absolute = std::path::absolute(arg).ok();
             let path = absolute.as_deref().unwrap_or_else(|| Path::new(arg));
+            state.start_maximized |= state.config.get_bool(crate::config::FILES_MAXIMIZED, false)
+                && path.is_file()
+                && (rgpl::is_playlist_file(path)
+                    || photo::is_image_file(path, &state.photos.formats));
             if rgpl::is_playlist_file(path) {
                 if let Err(error) = state.open_playlist(path) {
                     state.message = Some(error);
@@ -201,21 +208,20 @@ impl State {
                     state.knobs.recurse,
                     photo::image_formats(),
                 );
-                if path.is_dir() {
-                    state.load_new_order();
-                    return state;
-                }
             }
         }
 
-        state.apply_order();
         state.load_current();
         state
     }
 
     /// Keeps the settings panel's knobs in step with the config after it was saved.
     pub fn reload_knobs(&mut self) {
+        let was_random = self.knobs.random_order;
         self.knobs = Knobs::from(&self.config);
+        if was_random != self.knobs.random_order {
+            self.photos.reset_random_pass();
+        }
         self.toolbar_visible = self.knobs.show_toolbar;
         self.zoom_mode = self.knobs.zoom_mode;
     }

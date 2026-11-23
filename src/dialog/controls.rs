@@ -67,6 +67,7 @@ pub(super) fn untheme(handle: HWND) {
 }
 
 pub fn close() {
+    drop(SETTINGS_TOOLTIP.take());
     SCROLL.with(|cell| cell.set(0));
     SCROLL_MAX.with(|cell| cell.set(0));
     let handles = CONTROLS.with(|controls| controls.replace(Vec::new()));
@@ -74,14 +75,6 @@ pub fn close() {
         unsafe {
             let _ = DestroyWindow(handle);
         }
-    }
-}
-
-/// What the prompt starts with: the current file name, or the folder a copy would land in.
-pub(super) fn prefill(pending: Option<&Pending>, file: Option<&Path>) -> String {
-    match (pending, file) {
-        (Some(operation), Some(path)) => operation.prefill(path),
-        _ => String::new(),
     }
 }
 
@@ -101,17 +94,40 @@ pub(super) fn checked(handle: HWND) -> bool {
     unsafe { SendMessageW(handle, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))).0 == 1 }
 }
 
+pub(super) fn checkbox_handle(index: usize) -> Option<HWND> {
+    CONTROLS.with_borrow(|controls| {
+        controls
+            .iter()
+            .find(|(id, _)| *id == BASE_ID + index)
+            .map(|(_, handle)| *handle)
+    })
+}
+
+pub(super) fn enable_file_maximize(enabled: bool) {
+    let handle = ROWS
+        .iter()
+        .position(|row| row.key == FILES_MAXIMIZED)
+        .and_then(checkbox_handle);
+    if let Some(handle) = handle {
+        let _ = unsafe { EnableWindow(handle, enabled) };
+    }
+}
+
 pub fn click_checkbox_label(hwnd: HWND, x: i32, y: i32) -> Option<usize> {
     use windows::Win32::Foundation::SIZE;
     use windows::Win32::Graphics::Gdi::{GetDC, GetTextExtentPoint32W, ReleaseDC, SelectObject};
-    use windows::Win32::UI::WindowsAndMessaging::GetDlgItem;
 
     if x < CHECK_LABEL_X || y < HEADER {
         return None;
     }
     let index = ((y - HEADER) / ROW_HEIGHT) as usize;
     let row = ROWS.get(index)?;
-    if row.kind != Kind::CheckBox || y < row_y(index) + ROW_LABEL_TOP {
+    let label_x = CHECK_LABEL_X + row.indent();
+    if row.kind != Kind::CheckBox || x < label_x || y < row_y(index) + ROW_LABEL_TOP {
+        return None;
+    }
+    let checkbox = checkbox_handle(index)?;
+    if !unsafe { IsWindowEnabled(checkbox) }.as_bool() {
         return None;
     }
 
@@ -127,15 +143,13 @@ pub fn click_checkbox_label(hwnd: HWND, x: i32, y: i32) -> Option<usize> {
         let _ = SelectObject(dc, previous);
         let _ = ReleaseDC(Some(hwnd), dc);
         if !measured.as_bool()
-            || x >= CHECK_LABEL_X + size.cx
+            || x >= label_x + size.cx
             || y >= row_y(index) + ROW_LABEL_TOP + size.cy
         {
             return None;
         }
-        let id = BASE_ID + index;
-        let checkbox = GetDlgItem(Some(hwnd), id as i32).ok()?;
         set_checked(checkbox, !checked(checkbox));
-        Some(id)
+        Some(BASE_ID + index)
     }
 }
 
@@ -176,6 +190,27 @@ pub fn slideshow_intervals() -> Result<(u32, u32), &'static str> {
     parse_slideshow_intervals(&text("SlideshowInterval"), &text("SlideshowIntervalTo"))
 }
 
+pub fn normalize_slide_durations(id: usize) {
+    let Some(row) = id.checked_sub(BASE_ID).and_then(|index| ROWS.get(index)) else {
+        return;
+    };
+    if !matches!(row.key, "SlideshowInterval" | "SlideshowIntervalTo") {
+        return;
+    }
+    let Some(maximum) = ROWS.iter().position(|row| row.key == "SlideshowIntervalTo") else {
+        return;
+    };
+    if let Ok((_, seconds)) = slideshow_intervals() {
+        let id = BASE_ID + maximum;
+        if field_text(id)
+            .and_then(|text| text.trim().parse::<i64>().ok())
+            .is_some_and(|entered| entered < i64::from(seconds))
+        {
+            set_field_text(id, &seconds.to_string());
+        }
+    }
+}
+
 pub(super) fn parse_slideshow_intervals(
     minimum: &str,
     maximum: &str,
@@ -189,11 +224,12 @@ pub(super) fn parse_slideshow_intervals(
             .filter(|number| (1..=MAX_SECONDS).contains(number))
     };
     let minimum = seconds(minimum)
-        .ok_or("Enter a whole number from 1 to 2,147,483 for “Show each image for”.")?;
-    let maximum = seconds(maximum)
-        .ok_or("Enter a whole number from 1 to 2,147,483 for “… or up to this many seconds”.")?;
-    if maximum < minimum {
-        return Err("“… or up to this many seconds” must be at least “Show each image for”.");
-    }
-    Ok((minimum, maximum))
+        .ok_or("Enter a whole number from 1 to 2,147,483 for the minimum slide duration.")?;
+    let maximum = maximum
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|&seconds| seconds <= i64::from(MAX_SECONDS))
+        .ok_or("Enter a whole number up to 2,147,483 for the maximum slide duration.")?;
+    Ok((minimum, maximum.max(i64::from(minimum)) as u32))
 }

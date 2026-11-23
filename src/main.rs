@@ -25,6 +25,7 @@ mod rgpl;
 mod state;
 mod style;
 mod tools;
+mod tooltip;
 mod view;
 mod w32;
 mod zoom;
@@ -40,11 +41,12 @@ Usage:
   RustedGlass [PATH] [options]
 
 Arguments:
-  PATH                  Image, folder or `.rgpl` playlist to open
+  PATH                  Image, folder or .rgpl playlist to open
                         Use -- before a path that starts with a dash
 
 Options:
   --config <path>       Read and save settings in this file
+                        Also accepted: --config=<path>
   -f, --fullscreen      Start full screen
   -h, --help            Show this help
   -m, --maximized       Start maximized
@@ -53,16 +55,20 @@ Options:
   -V, --version         Print the version and exit
 
 Keys:
-  Esc                   Close panel; stop slideshow, then quit; otherwise quit immediately
-  F1                    Toggle the shortcut list
-  F10                   Toggle the window frame
-  F11                   Start or stop the slideshow
+  Esc                   Close the panel or playlist. Stop an active slideshow.
+                        Quit if neither applies.
+  F1                    Show or hide keyboard shortcuts
+  F10                   Show or hide window frame
+  F11                   Start or stop slideshow
   F12                   Toggle full screen
-  L                     Toggle the playlist
-  S                     Open settings
-  T                     Toggle the toolbar
+  L                     Show or hide playlist
+  S / Ctrl + P          Open Settings
+  T                     Show or hide toolbar
+  Ctrl + Q              Quit
 
-By default, settings are read from and written to `rgconfig.json` next to the executable.
+Press F1 in the viewer for all keyboard shortcuts and mouse gestures.
+
+By default, settings are read from and written to rgconfig.json next to the executable.
 ";
 
 fn main() {
@@ -204,7 +210,7 @@ fn app_dir() -> std::path::PathBuf {
 /// `-m`, `-f` and `-t` as `-p:` overrides of the settings `Knobs` reads.
 fn setting_overrides(args: &[String]) -> Vec<String> {
     const FLAGS: [(&str, &str, &str); 3] = [
-        ("-m", "--maximized", "EnableMainWindowMaximized"),
+        ("-m", "--maximized", config::ALWAYS_MAXIMIZED),
         ("-f", "--fullscreen", "EnableFullScreen"),
         ("-t", "--topmost", "EnableWindowTopMost"),
     ];

@@ -38,10 +38,10 @@ fn folder_list_skips_other_files() {
 
     let mut photos = PhotoList::from_path(&dir.join("a.jpg"), false, false, image_formats());
     assert_eq!(photos.index, 0);
-    assert!(photos.step(1, false, false, None, (false, false)));
+    assert!(photos.step(1, false, false, (false, false)));
     assert_eq!(file_name(photos.current().unwrap()), "b.png");
-    assert!(!photos.step(1, false, false, None, (false, false))); // no loop, no sibling folder
-    assert!(photos.step(-1, true, false, None, (false, false))); // wrap back to the first
+    assert!(!photos.step(1, false, false, (false, false))); // no loop, no sibling folder
+    assert!(photos.step(-1, true, false, (false, false))); // wrap back to the first
     assert_eq!(file_name(photos.current().unwrap()), "a.jpg");
 
     fs::remove_dir_all(&dir).ok();
@@ -70,13 +70,13 @@ fn shuffle_is_a_permutation_and_browsing_follows_it() {
     for _ in 0..3 {
         walked.push(file_name(photos.current().unwrap()));
         assert!(
-            photos.step(1, false, false, None, (false, false)),
+            photos.step(1, false, false, (false, false)),
             "never stuck before the last entry"
         );
     }
     walked.push(file_name(photos.current().unwrap()));
     assert!(
-        !photos.step(1, false, false, None, (false, false)),
+        !photos.step(1, false, false, (false, false)),
         "without loop_back the last entry has no next"
     );
     let mut sorted = walked;
@@ -217,7 +217,7 @@ fn an_empty_playlist_walks_nowhere() {
     let mut photos = PhotoList::empty();
     assert!(photos.is_empty());
     assert!(
-        !photos.step(1, true, false, None, (false, false)),
+        !photos.step(1, true, false, (false, false)),
         "no divide by zero on an empty list"
     );
     assert_eq!(photos.current(), None);

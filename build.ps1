@@ -11,7 +11,9 @@ $buildDir = Join-Path $PSScriptRoot 'build'
 
 Push-Location -LiteralPath $PSScriptRoot
 try {
-    & $cargo.Source build --release --locked --target $target --target-dir $targetDir
+    # Windows Sandbox may not have the Visual C++ runtime installed.
+    & $cargo.Source build --release --locked --target $target --target-dir $targetDir `
+        --config "target.$target.rustflags=['-C', 'target-feature=+crt-static']"
     if ($LASTEXITCODE -ne 0) {
         throw 'Cargo build failed. See the error above. If the MSVC linker or Windows SDK is missing, install the Desktop development with C++ workload from https://visualstudio.microsoft.com/downloads/.'
     }

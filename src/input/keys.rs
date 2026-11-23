@@ -3,53 +3,83 @@ type Shortcut = (&'static str, &'static str);
 
 /// Keyboard shortcuts and mouse gestures grouped by task for the F1 panel.
 pub const SHORTCUT_GROUPS: &[(&str, &[Shortcut])] = &[
-    ("Browse images", &[
-        ("← / ↑", "Previous image"),
-        ("→ / ↓", "Next image"),
-        ("Space", "Next image, or pause / resume slideshow"),
-        ("Home / End", "First, last image"),
-        ("Wheel", "Previous, next image"),
-        ("O", "Open files"),
-        ("F", "Open a folder"),
-        ("I", "Show image dimensions and EXIF details"),
-    ]),
-    ("Zoom and rotate", &[
-        ("0", "Show the whole picture"),
-        ("1 - 6", "Zoom modes 1 to 6"),
-        ("+ / -", "Zoom in, zoom out"),
-        ("Ctrl + Wheel", "Zoom in, zoom out"),
-        ("Drag", "Move the image"),
-        ("R", "Turn it 90 degrees"),
-    ]),
-    ("Slideshow", &[
-        ("F11", "Slideshow on, off"),
-    ]),
-    ("Playlists", &[
-        ("L", "Playlist on, off"),
-        ("Ctrl + O / S", "Open / save a playlist"),
-        ("Ctrl + A", "Random display order"),
-        ("A", "Add files to the list"),
-        ("Shift + A", "Add a folder to the list"),
-        ("Del", "Remove this item from the list"),
-    ]),
-    ("File actions", &[
-        ("Ctrl + Del", "Delete the file (recycle bin)"),
-        ("M", "Move the file to the set folder"),
-        ("F2", "Rename the file"),
-        ("C", "Copy the file to a folder"),
-        ("E", "Show the file in Explorer"),
-    ]),
-    ("Window and help", &[
-        ("F12", "Full screen on, off"),
-        ("F10", "Window frame on, off"),
-        ("Drag from top", "Move the borderless window. Start just below the top edge, clear of the toolbar buttons."),
-        ("T", "Tool bar on, off"),
-        ("S / Ctrl + P", "Open the settings panel"),
-        ("Right-click", "Menu of everything"),
-        ("F1", "Shortcut list on, off"),
-        ("Esc", "Close panel; stop slideshow, then quit; otherwise quit immediately"),
-        ("Ctrl + Q", "Quit"),
-    ]),
+    (
+        "Navigation",
+        &[
+            ("← / ↑", "Previous image"),
+            ("→ / ↓", "Next image"),
+            ("Home / End", "Go to first / last image"),
+            ("Wheel", "Browse images"),
+            ("O", "Open images"),
+            ("F", "Open folder"),
+            ("Ctrl + A", "Toggle random image order"),
+        ],
+    ),
+    (
+        "Zoom and image",
+        &[
+            ("+ / −", "Zoom in / out"),
+            ("Ctrl + Wheel", "Zoom in / out"),
+            ("0 / 5", "Fit image to window"),
+            ("1 / 2", "Auto zoom / lock zoom ratio"),
+            ("3 / 4", "Scale to width / height"),
+            ("6", "Scale to fill"),
+            ("Drag", "Pan image when ‘Pan image by dragging’ is enabled"),
+            ("R", "Rotate image 90°"),
+            ("I", "Show image information"),
+        ],
+    ),
+    (
+        "Slideshow",
+        &[
+            ("F11", "Start or stop slideshow"),
+            ("Space", "Pause / resume slideshow or view next image"),
+        ],
+    ),
+    (
+        "Playlist",
+        &[
+            ("L", "Show or hide playlist"),
+            ("Ctrl + O", "Open playlist"),
+            ("Ctrl + S", "Save playlist"),
+            ("A", "Add images"),
+            ("Shift + A", "Add folder"),
+            ("Del", "Remove image or selected rows from playlist"),
+        ],
+    ),
+    (
+        "Files",
+        &[
+            ("Ctrl + Del", "Move image or selected files to Recycle Bin"),
+            ("M", "Quick-move image"),
+            ("F2", "Rename image"),
+            ("C", "Save as"),
+            ("E", "Show image in Explorer"),
+        ],
+    ),
+    (
+        "Window and help",
+        &[
+            ("F12", "Toggle full screen"),
+            ("F10", "Show or hide window frame"),
+            (
+                "Drag from top",
+                "Move borderless window from below the top edge, clear of toolbar buttons",
+            ),
+            ("T", "Show or hide toolbar"),
+            ("S / Ctrl + P", "Open Settings"),
+            (
+                "Right-click",
+                "Open context menu. In the playlist, use Sort by to reorder rows",
+            ),
+            ("F1", "Show or hide keyboard shortcuts"),
+            (
+                "Esc",
+                "Close the panel or playlist. Stop an active slideshow. Quit if neither applies.",
+            ),
+            ("Ctrl + Q", "Quit"),
+        ],
+    ),
 ];
 
 /// Whether Ctrl is down. `MK_CONTROL` has no constant in this windows-rs version, and Ctrl+wheel
@@ -119,7 +149,7 @@ pub fn on_key(vk: u32, ctrl: bool, shift: bool) -> Option<Action> {
             'a' if ctrl => Action::RandomOrder,
             'a' => Action::AddFiles,
             'm' => Action::MoveToTarget,
-            'c' => Action::CopyToFolder,
+            'c' => Action::SaveAs,
             'e' => Action::ShowInExplorer,
             'i' if !ctrl => Action::ImageInfo,
             'q' if ctrl => Action::Quit,

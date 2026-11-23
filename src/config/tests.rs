@@ -35,6 +35,7 @@ fn only_the_user_file_is_loaded_and_cli_can_override_it() {
 
     let cfg = Config::load(dir.join(CONFIG_USER), &["-p:ShowGallery=false".to_string()]);
     assert!(!cfg.get_bool("showgallery", true));
+    assert!(cfg.get_saved_bool("showgallery", false));
     assert_eq!(cfg.get_f64("ZoomSpeed", 0.0), 0.0);
 
     fs::remove_dir_all(&dir).ok();
@@ -137,10 +138,7 @@ fn cli_values_keep_their_json_type() {
 
     assert!(cfg.get_bool("EnableSlideshow", false));
     assert_eq!(cfg.get_f64("SlideshowInterval", 0.0), 7.0);
-    assert_eq!(
-        cfg.values.get("colorprofile"),
-        Some(&Value::String("srgb".into()))
-    );
+    assert_eq!(cfg.get("ColorProfile"), Some(&Value::String("srgb".into())));
 
     fs::remove_dir_all(&dir).ok();
 }

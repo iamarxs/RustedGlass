@@ -1,14 +1,12 @@
 use super::*;
 
 impl State {
-    /// Turns a looped slideshow into a repeating one: shuffle the order, and shuffle it again when
-    /// the last row is reached.
-    /// Runs from the image on screen, in the order the list has. `Shuffle` and `Repeat` are the
-    /// user's own settings now, so starting never changes them.
+    /// Starts a new slideshow pass from the image on screen.
     pub fn start_slideshow(&mut self) {
         if self.photos.is_empty() {
             return;
         }
+        self.photos.reset_random_pass();
         self.slide_revision = self.slide_revision.wrapping_add(1);
         self.slideshow_elapsed = false;
         self.slideshow_paused = self.playlist_visible;
@@ -91,17 +89,26 @@ impl State {
         true
     }
 
-    /// Moves to the next or previous file. A slideshow that reaches the last image starts again if
-    /// `Repeat` is on — in a fresh shuffled order when `Shuffle` is on too — and otherwise ends.
-    ///
-    /// Every image of a shuffled pass is shown once: the order is only made again at the end of a
-    /// pass, never in the middle of one.
-    ///
-    /// The picture is not loaded here: the caller says when the last move of a fast run of wheel
-    /// clicks is worth the decode.
+    /// Selects an image for navigation. The caller loads it after coalescing rapid input.
     pub fn step(&mut self, delta: i32) -> bool {
         if self.photos.is_empty() {
             self.message = Some(String::from("No images in this folder"));
+            return false;
+        }
+
+        if self.knobs.random_order {
+            let seed = random_seed();
+            if !self.slideshow_running {
+                self.photos.reset_random_pass();
+                return self.photos.pick_random(seed);
+            }
+            if self
+                .photos
+                .pick_random_slide(seed, self.knobs.loop_slideshow)
+            {
+                return true;
+            }
+            self.slideshow_running = false;
             return false;
         }
 
@@ -110,15 +117,11 @@ impl State {
                 self.slideshow_running = false;
                 return false;
             }
-            if self.knobs.random_order {
-                self.photos.shuffle(random_seed());
-            }
             self.photos.index = 0;
         } else if !self.photos.step(
             delta,
             self.knobs.loop_back,
             self.knobs.auto_sibling_dir,
-            self.knobs.random_order.then(random_seed),
             (self.knobs.include_hidden, self.knobs.recurse),
         ) {
             return false;

@@ -8,12 +8,15 @@ use serde_json::Value;
 
 pub const CONFIG_USER: &str = "rgconfig.json";
 pub const CONFIG_CMD_PREFIX: &str = "-p:";
+pub const ALWAYS_MAXIMIZED: &str = "EnableMainWindowMaximized";
+pub const FILES_MAXIMIZED: &str = "OpenImagesMaximized";
 pub const SPEC_VERSION: f32 = 1.0;
 
 /// Values from the selected user file and command-line overrides.
 pub struct Config {
     user_path: PathBuf,
     values: HashMap<String, Value>,
+    overrides: HashMap<String, Value>,
     /// Keys changed by the user, under their original spelling, waiting to be written
     /// to `rgconfig.json`. Only these are written, so the user's own key names survive.
     dirty: HashMap<String, (String, Value)>,
@@ -28,6 +31,7 @@ impl Config {
         let mut cfg = Config {
             user_path,
             values: HashMap::new(),
+            overrides: index(&Self::cli_overrides(args)),
             dirty: HashMap::new(),
             incompatible_user_path: None,
         };
@@ -45,12 +49,23 @@ impl Config {
         if let Some(user) = user {
             cfg.values = index(&user);
         }
-        cfg.values.extend(index(&Self::cli_overrides(args)));
         cfg
+    }
+
+    fn get(&self, key: &str) -> Option<&Value> {
+        let folded = key.to_lowercase();
+        self.overrides
+            .get(&folded)
+            .or_else(|| self.values.get(&folded))
     }
 
     /// Reads a boolean setting, or `default` when absent or not a bool.
     pub fn get_bool(&self, key: &str, default: bool) -> bool {
+        self.get(key).and_then(Value::as_bool).unwrap_or(default)
+    }
+
+    /// The preference shown in Settings, before any one-run CLI override.
+    pub fn get_saved_bool(&self, key: &str, default: bool) -> bool {
         self.values
             .get(&key.to_lowercase())
             .and_then(Value::as_bool)
@@ -59,8 +74,7 @@ impl Config {
 
     /// Reads a text setting, or `default` when absent or not a string.
     pub fn get_str(&self, key: &str, default: &str) -> String {
-        self.values
-            .get(&key.to_lowercase())
+        self.get(key)
             .and_then(Value::as_str)
             .unwrap_or(default)
             .to_string()
@@ -68,19 +82,17 @@ impl Config {
 
     /// Reads a number setting, or `default` when absent or not a number.
     pub fn get_f64(&self, key: &str, default: f64) -> f64 {
-        self.values
-            .get(&key.to_lowercase())
-            .and_then(Value::as_f64)
-            .unwrap_or(default)
+        self.get(key).and_then(Value::as_f64).unwrap_or(default)
     }
 
     pub fn window_bounds(&self) -> Option<(i32, i32, i32, i32)> {
-        serde_json::from_value(self.values.get("windowbounds")?.clone()).ok()
+        serde_json::from_value(self.get("WindowBounds")?.clone()).ok()
     }
 
     /// Changes a setting and marks it for saving.
     pub fn set(&mut self, key: &str, value: Value) {
         let folded = key.to_lowercase();
+        self.overrides.remove(&folded);
         self.values.insert(folded.clone(), value.clone());
         self.dirty.insert(folded, (key.to_string(), value));
     }

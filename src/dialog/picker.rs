@@ -1,4 +1,6 @@
 use super::*;
+use windows::Win32::UI::Shell::{FOS_FORCEFILESYSTEM, FOS_OVERWRITEPROMPT, FOS_STRICTFILETYPES};
+
 /// COM is needed by the file and folder pickers; calling it again is harmless.
 fn init_com() {
     unsafe {
@@ -7,15 +9,13 @@ fn init_com() {
 }
 
 /// A folder picked with the system dialog, `None` if the user cancelled.
-pub fn pick_folder(parent: HWND) -> Option<PathBuf> {
-    pick(parent, FOS_PICKFOLDERS, "Pick a folder of images")
-        .first()
-        .cloned()
+pub fn pick_folder(parent: HWND, heading: &str) -> Option<PathBuf> {
+    pick(parent, FOS_PICKFOLDERS, heading).first().cloned()
 }
 
 /// Files picked with the system dialog; empty if the user cancelled.
-pub fn pick_files(parent: HWND) -> Vec<PathBuf> {
-    pick(parent, FOS_ALLOWMULTISELECT, "Pick images")
+pub fn pick_files(parent: HWND, heading: &str) -> Vec<PathBuf> {
+    pick(parent, FOS_ALLOWMULTISELECT, heading)
 }
 
 /// One file of one kind, for the playlist dialogs. `None` if the user cancelled.
@@ -33,7 +33,9 @@ pub fn pick_one_file(parent: HWND, heading: &str, label: &str, pattern: &str) ->
         pszSpec: PCWSTR(wide_pattern.as_ptr()),
     }];
     unsafe {
-        let _ = dialog.SetOptions(FILEOPENDIALOGOPTIONS(0));
+        dialog
+            .SetOptions(dialog.GetOptions().ok()? | FOS_FORCEFILESYSTEM)
+            .ok()?;
         let _ = dialog.SetTitle(PCWSTR(w32::wide(heading).as_ptr()));
         let _ = dialog.SetFileTypes(&filter);
         if dialog.Show(Some(parent)).is_err() {
@@ -52,6 +54,39 @@ pub fn pick_save_file(
     pattern: &str,
     suggested: &str,
 ) -> Option<PathBuf> {
+    save_dialog(
+        parent,
+        heading,
+        label,
+        pattern,
+        suggested,
+        crate::rgpl::EXTENSION,
+        FILEOPENDIALOGOPTIONS(0),
+    )
+}
+
+pub fn pick_image_destination(parent: HWND, image: &Path) -> Option<PathBuf> {
+    let extension = image.extension()?.to_str()?;
+    save_dialog(
+        parent,
+        "Save as",
+        "Original image format",
+        &format!("*.{extension}"),
+        &w32::file_name(image),
+        extension,
+        FOS_STRICTFILETYPES,
+    )
+}
+
+fn save_dialog(
+    parent: HWND,
+    heading: &str,
+    label: &str,
+    pattern: &str,
+    suggested: &str,
+    extension: &str,
+    flags: FILEOPENDIALOGOPTIONS,
+) -> Option<PathBuf> {
     init_com();
     let Ok(dialog) = (unsafe {
         CoCreateInstance::<_, IFileSaveDialog>(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)
@@ -67,7 +102,9 @@ pub fn pick_save_file(
     unsafe {
         let _ = dialog.SetTitle(PCWSTR(w32::wide(heading).as_ptr()));
         let _ = dialog.SetFileTypes(&filter);
-        let _ = dialog.SetDefaultExtension(PCWSTR(w32::wide(crate::rgpl::EXTENSION).as_ptr()));
+        let options = dialog.GetOptions().ok()? | FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT;
+        dialog.SetOptions(options | flags).ok()?;
+        let _ = dialog.SetDefaultExtension(PCWSTR(w32::wide(extension).as_ptr()));
         let _ = dialog.SetFileName(PCWSTR(w32::wide(suggested).as_ptr()));
         if dialog.Show(Some(parent)).is_err() {
             return None;
@@ -85,7 +122,15 @@ fn pick(parent: HWND, options: FILEOPENDIALOGOPTIONS, heading: &str) -> Vec<Path
     };
     let title = w32::wide(heading);
     unsafe {
-        let _ = dialog.SetOptions(options);
+        let Ok(defaults) = dialog.GetOptions() else {
+            return Vec::new();
+        };
+        if dialog
+            .SetOptions(defaults | FOS_FORCEFILESYSTEM | options)
+            .is_err()
+        {
+            return Vec::new();
+        }
         let _ = dialog.SetTitle(PCWSTR(title.as_ptr()));
         if dialog.Show(Some(parent)).is_err() {
             return Vec::new();

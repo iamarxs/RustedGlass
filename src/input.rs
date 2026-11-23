@@ -16,7 +16,6 @@ use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
 
 use crate::dialog::{self, Dialog};
-use crate::fileops::Pending;
 use crate::playlist;
 use crate::state;
 use crate::tools::{self, Action};
@@ -59,21 +58,6 @@ pub fn apply_action(hwnd: HWND, action: Action) {
                 state.dialog = Dialog::None;
                 state.pending = None;
             });
-            view::refresh(hwnd);
-        }
-        Action::CloseImage => {
-            state::with_state(|state| {
-                if state.slideshow_running || state.slideshow_paused {
-                    state.stop_slideshow();
-                }
-                state.bitmap = None;
-                state.animation = None;
-                state.navigation_pending = false;
-                state.message = Some(String::from(
-                    "Nothing shown: press F for a folder, or drop one here",
-                ));
-            });
-            view::expire_notice(hwnd);
             view::refresh(hwnd);
         }
         Action::ToggleToolBar => {
@@ -188,7 +172,10 @@ pub fn apply_action(hwnd: HWND, action: Action) {
             view::refresh(hwnd);
         }
         Action::OpenFile | Action::AddFiles => {
-            let paths = dialog::pick_files(hwnd);
+            let paths = match action {
+                Action::OpenFile => dialog::pick_files(hwnd, "Open images"),
+                _ => dialog::pick_files(hwnd, "Add images"),
+            };
             if !paths.is_empty() {
                 state::with_state(|state| match action {
                     Action::OpenFile => state.open_files(&paths),
@@ -200,7 +187,10 @@ pub fn apply_action(hwnd: HWND, action: Action) {
             }
         }
         Action::OpenFolder | Action::AddFolder => {
-            let folder = dialog::pick_folder(hwnd);
+            let folder = match action {
+                Action::OpenFolder => dialog::pick_folder(hwnd, "Open folder"),
+                _ => dialog::pick_folder(hwnd, "Add folder"),
+            };
             if let Some(dir) = folder {
                 state::with_state(|state| match action {
                     Action::OpenFolder => state.open_folder(&dir),
@@ -227,8 +217,8 @@ pub fn apply_action(hwnd: HWND, action: Action) {
             });
             view::refresh(hwnd);
         }
-        Action::Rename => ask(hwnd, Pending::Rename),
-        Action::CopyToFolder => ask(hwnd, Pending::CopyTo(PathBuf::new())),
+        Action::Rename => ask_rename(hwnd),
+        Action::SaveAs => save_as(hwnd),
         Action::ShowInExplorer => {
             state::with_state(|state| {
                 if let Some(path) = state.photos.current() {
@@ -238,8 +228,7 @@ pub fn apply_action(hwnd: HWND, action: Action) {
             view::refresh(hwnd);
         }
         Action::OpenPlaylist => {
-            let path =
-                dialog::pick_one_file(hwnd, "Open a playlist", "Playlists (.rgpl)", "*.rgpl");
+            let path = dialog::pick_one_file(hwnd, "Open playlist", "Playlists (.rgpl)", "*.rgpl");
             if let Some(path) = path {
                 state::with_state(|state| {
                     if let Err(message) = state.open_playlist(&path) {
@@ -252,7 +241,7 @@ pub fn apply_action(hwnd: HWND, action: Action) {
         Action::SavePlaylist => {
             let path = dialog::pick_save_file(
                 hwnd,
-                "Save the list of files",
+                "Save playlist",
                 "Playlists (.rgpl)",
                 "*.rgpl",
                 "playlist",
@@ -296,7 +285,6 @@ pub fn apply_action(hwnd: HWND, action: Action) {
         Action::Quit => {
             let _ = unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) };
         }
-        Action::Separator => {}
     }
 }
 
@@ -308,4 +296,4 @@ mod pointer;
 use pointer::targets;
 pub use pointer::{on_drag, on_drag_end, on_drop, on_wheel, show_menu};
 mod panels;
-use panels::{ask, open_panel, settle_file_selection};
+use panels::{ask_rename, open_panel, save_as, settle_file_selection};

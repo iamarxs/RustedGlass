@@ -19,23 +19,44 @@ pub(super) fn copy_image(hwnd: HWND) {
     view::expire_notice(hwnd);
     unsafe { w32::invalidate(hwnd) };
 }
-/// Opens the prompt for a rename, copy or move, pre-filled with what the operation starts from.
-pub(super) fn ask(hwnd: HWND, operation: Pending) {
+pub(super) fn ask_rename(hwnd: HWND) {
     state::with_state(|state| {
         let Some(path) = state.photos.current() else {
             return;
         };
-        state.pending = Some((operation, path.clone()));
+        state.pending = Some(path.clone());
         state.dialog = Dialog::Text(String::new());
-        dialog::open(
-            &state.dialog,
-            &state.config,
-            hwnd,
-            state.pending.as_ref().map(|(operation, _)| operation),
-            Some(path),
-        );
+        dialog::open(&state.dialog, &state.config, hwnd, Some(path));
     });
     view::refresh(hwnd);
+}
+
+pub(super) fn save_as(hwnd: HWND) {
+    let Some(source) = state::with_state(|state| state.photos.current().cloned()).flatten() else {
+        return;
+    };
+    let Some(target) = dialog::pick_image_destination(hwnd, &source) else {
+        return;
+    };
+    if source
+        .canonicalize()
+        .is_ok_and(|path| target.canonicalize().is_ok_and(|target| target == path))
+    {
+        return;
+    }
+    let result = crate::atomic_file::copy(&source, &target);
+    state::with_state(|state| {
+        state.notice = Some(match result {
+            Ok(()) => {
+                if !state.photos.files.contains(&target) {
+                    state.add_files(std::slice::from_ref(&target));
+                }
+                format!("Saved {}", target.display())
+            }
+            Err(error) => format!("Could not save image: {error}"),
+        });
+    });
+    refresh_import(hwnd);
 }
 
 /// Opens a settings or shortcuts panel: its child controls are built by `dialog`.
@@ -46,7 +67,7 @@ pub(super) fn open_panel(hwnd: HWND, kind: Dialog) {
             state.dialog = Dialog::None;
         } else {
             state.dialog = kind;
-            dialog::open(&state.dialog, &state.config, hwnd, None, None);
+            dialog::open(&state.dialog, &state.config, hwnd, None);
         }
     });
     view::refresh(hwnd);
@@ -60,7 +81,7 @@ pub(super) fn settle_file_selection(hwnd: HWND, action: Action) -> bool {
             | Action::DeleteFile
             | Action::MoveToTarget
             | Action::Rename
-            | Action::CopyToFolder
+            | Action::SaveAs
             | Action::ShowInExplorer
             | Action::RemoveSelected
             | Action::DeleteSelected

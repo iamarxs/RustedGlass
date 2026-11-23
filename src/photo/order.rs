@@ -6,6 +6,7 @@ impl PhotoList {
         if from >= self.len() || to >= self.len() || from == to {
             return;
         }
+        self.reset_random_pass();
         let selected = self.file_index(self.index);
         if self.order.is_empty() {
             self.order.extend(0..self.files.len());
@@ -24,6 +25,7 @@ impl PhotoList {
 
     /// Orders the entries by name, reversed when `descending`.
     pub fn sort_by_name(&mut self, descending: bool) {
+        self.reset_random_pass();
         let selected = self.file_index(self.index);
         self.order.clear();
         self.index = sort_names(&mut self.files, descending, selected).unwrap_or(0);

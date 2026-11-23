@@ -21,7 +21,9 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::UI::Controls::{SetWindowTheme, BST_CHECKED};
-use windows::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_RETURN};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    EnableWindow, IsWindowEnabled, SetFocus, VK_RETURN,
+};
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
     DefSubclassProc, FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog, IShellItem,
@@ -34,8 +36,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_KEYDOWN, WM_SETFONT, WS_BORDER, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
 };
 
-use crate::config::Config;
-use crate::fileops::Pending;
+use crate::config::{Config, ALWAYS_MAXIMIZED, FILES_MAXIMIZED};
+use crate::tooltip::Tooltip;
 use crate::w32;
 
 /// What the panel is asking for.
@@ -85,6 +87,7 @@ const COLUMN_WIDTH: i32 = 300;
 // they are children of the viewer window, so they live and die with it.
 thread_local! {
     static CONTROLS: RefCell<Vec<(usize, HWND)>> = const { RefCell::new(Vec::new()) };
+    static SETTINGS_TOOLTIP: RefCell<Option<Tooltip>> = const { RefCell::new(None) };
     // The panel's colour as a brush. Windows asks for it every time a control repaints, so it is
     // made once and kept.
     static PANEL_BRUSH: RefCell<Option<HBRUSH>> = const { RefCell::new(None) };
@@ -183,7 +186,7 @@ fn title(dialog: &Dialog) -> &'static str {
     match dialog {
         Dialog::Settings => "Settings",
         Dialog::Shortcuts => "Keyboard shortcuts",
-        Dialog::Text(_) => "Type a name or a folder",
+        Dialog::Text(_) => "Rename image",
         Dialog::None => "",
     }
 }
@@ -225,15 +228,12 @@ pub fn apply_to_config(dialog: &Dialog, config: &mut Config, only: Option<usize>
         }
         match row.kind {
             Kind::CheckBox => {
-                let state = CONTROLS.with(|controls| {
-                    controls
-                        .borrow()
-                        .iter()
-                        .find(|(control, _)| *control == id)
-                        .map(|(_, handle)| checked(*handle))
-                });
-                if let Some(is_checked) = state {
+                if let Some(handle) = controls::checkbox_handle(index) {
+                    let is_checked = checked(handle);
                     config.set(row.key, Value::Bool(is_checked));
+                    if row.key == ALWAYS_MAXIMIZED {
+                        controls::enable_file_maximize(!is_checked);
+                    }
                 }
             }
             Kind::PathField => {
@@ -258,14 +258,17 @@ pub fn apply_to_config(dialog: &Dialog, config: &mut Config, only: Option<usize>
 mod tests;
 
 mod picker;
-pub use picker::{pick_files, pick_folder, pick_one_file, pick_save_file};
+pub use picker::{pick_files, pick_folder, pick_image_destination, pick_one_file, pick_save_file};
 
 mod layout;
 pub use layout::{open, resize_shortcuts};
 
 mod controls;
-use controls::{checked, create, field_text, prefill, prompt_key, set_checked, untheme};
-pub use controls::{click_checkbox_label, close, prompt_text, set_field_text, slideshow_intervals};
+use controls::{checked, create, field_text, prompt_key, set_checked, untheme};
+pub use controls::{
+    click_checkbox_label, close, normalize_slide_durations, prompt_text, set_field_text,
+    slideshow_intervals,
+};
 
 mod draw;
 pub use draw::{color_control, draw};

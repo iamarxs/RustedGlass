@@ -2,10 +2,12 @@ use super::controls::parse_slideshow_intervals;
 use super::*;
 
 #[test]
-fn slideshow_settings_require_an_ordered_pair_of_whole_seconds() {
+fn slideshow_settings_clamp_the_maximum_to_the_minimum() {
     assert_eq!(parse_slideshow_intervals(" 5 ", "5"), Ok((5, 5)));
     assert_eq!(parse_slideshow_intervals("5", "12"), Ok((5, 12)));
-    for (minimum, maximum) in [("5", "4"), ("5", "5.5"), ("5", ""), ("0", "5")] {
+    assert_eq!(parse_slideshow_intervals("5", "4"), Ok((5, 5)));
+    assert_eq!(parse_slideshow_intervals("5", "-1"), Ok((5, 5)));
+    for (minimum, maximum) in [("5", "5.5"), ("5", ""), ("0", "5"), ("5", "2147484")] {
         assert!(parse_slideshow_intervals(minimum, maximum).is_err());
     }
 }

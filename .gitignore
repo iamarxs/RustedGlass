@@ -3,3 +3,4 @@
 rgconfig.json
 *.pdb
 .rustedglass-*.tmp
+/.scratch/

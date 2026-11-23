@@ -31,12 +31,12 @@ impl ZoomMode {
     /// Label of the tool bar button and the menu entry.
     pub fn label(self) -> &'static str {
         match self {
-            ZoomMode::AutoZoom => "Auto",
-            ZoomMode::LockZoom => "Lock",
-            ZoomMode::ScaleToWidth => "Width",
-            ZoomMode::ScaleToHeight => "Height",
-            ZoomMode::ScaleToFit => "Fit",
-            ZoomMode::ScaleToFill => "Fill",
+            ZoomMode::AutoZoom => "Auto zoom",
+            ZoomMode::LockZoom => "Lock zoom ratio",
+            ZoomMode::ScaleToWidth => "Scale to width",
+            ZoomMode::ScaleToHeight => "Scale to height",
+            ZoomMode::ScaleToFit => "Scale to fit",
+            ZoomMode::ScaleToFill => "Scale to fill",
         }
     }
 
@@ -94,7 +94,7 @@ pub fn factor(mode: ZoomMode, bitmap: (u32, u32), area: (u32, u32), locked: f64)
 /// How much one wheel notch or one zoom key press multiplies the zoom by, from the `ZoomSpeed`
 /// setting (`0` = auto): the smaller that setting, the smaller each step.
 pub fn zoom_step(zoom_speed: f64, delta: i32) -> f64 {
-    let speed = zoom_speed.clamp(0.0, 499.0);
+    let speed = zoom_speed.clamp(-499.0, 499.0);
     let step = (delta.abs() as f64 / (500.0 - speed + 1.0)).clamp(0.01, 1.0);
     1.0 + step
 }
@@ -137,7 +137,9 @@ mod tests {
             "only the size of the step matters"
         );
         assert!(zoom_step(0.0, 0) > 1.0, "a step is never zero");
-        assert!(zoom_step(-500.0, 120) <= zoom_step(500.0, 120));
+        assert!(zoom_step(-400.0, 120) < zoom_step(0.0, 120));
+        assert_eq!(zoom_step(-500.0, 120), zoom_step(-499.0, 120));
+        assert_eq!(zoom_step(500.0, 120), zoom_step(499.0, 120));
     }
 
     #[test]
@@ -155,6 +157,6 @@ mod tests {
             .collect();
         assert_eq!(MODES.iter().map(|m| m.hotkey()).collect::<Vec<_>>(), keys);
         assert_eq!(ZoomMode::ScaleToHeight.as_str(), "ScaleToHeight");
-        assert_eq!(ZoomMode::LockZoom.label(), "Lock");
+        assert_eq!(ZoomMode::LockZoom.label(), "Lock zoom ratio");
     }
 }

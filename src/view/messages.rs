@@ -36,6 +36,7 @@ pub(super) unsafe extern "system" fn wndproc(
             }
             WM_SIZE => {
                 if paint::is_live_resize() {
+                    caption::update(hwnd);
                     layout_controls(hwnd);
                     w32::invalidate(hwnd);
                 } else {
@@ -162,6 +163,7 @@ pub(super) unsafe extern "system" fn wndproc(
                 LRESULT(dialog::color_control(HDC(wparam.0 as *mut std::ffi::c_void)).0 as isize)
             }
             WM_COMMAND => {
+                use windows::Win32::UI::WindowsAndMessaging::EN_KILLFOCUS;
                 let id = w32::command_id(wparam);
                 if id == PROMPT_ID {
                     if lparam.0 == 0 {
@@ -179,6 +181,9 @@ pub(super) unsafe extern "system" fn wndproc(
                     let _ = SetFocus(Some(hwnd));
                 } else if state::with_state(|state| state.dialog == Dialog::Settings) == Some(true)
                 {
+                    if (wparam.0 >> 16) as u32 == EN_KILLFOCUS {
+                        dialog::normalize_slide_durations(id);
+                    }
                     toggle_setting(hwnd, id);
                 }
                 LRESULT(0)
@@ -233,13 +238,16 @@ pub(super) unsafe extern "system" fn wndproc(
                 LRESULT(1)
             }
             WM_DESTROY => {
+                caption::clear();
                 paint::clear_buffer();
                 timers::clear(hwnd);
                 // Settings the user changed while the window was open survive the next start.
                 state::with_state(|state| {
-                    state
-                        .config
-                        .set("WindowBounds", serde_json::json!(state.normal_rect));
+                    if !(state.start_maximized && IsZoomed(hwnd).as_bool()) {
+                        state
+                            .config
+                            .set("WindowBounds", serde_json::json!(state.normal_rect));
+                    }
                     let _ = state.config.save_user();
                 });
                 PostQuitMessage(0);

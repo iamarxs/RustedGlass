@@ -1,136 +1,222 @@
 use super::*;
+
 pub fn show_menu(hwnd: HWND) -> Option<Action> {
-    let playlist =
-        crate::state::with_state(|s| s.playlist_visible.then_some(s.knobs.loop_slideshow))?;
-    // While the list of files is on screen, a right-click is about the rows: the menu of the list
-    // replaces the menu of the picture, which is one `Esc` away.
-    if let Some(repeat) = playlist {
-        return playlist_menu(hwnd, repeat);
-    }
-    let items = crate::state::with_state(|s| items(s, &s.config))?;
-    unsafe {
-        let menu = CreatePopupMenu().ok()?;
-        for (index, item) in items.iter().enumerate() {
-            let mut flags = if item.action == Action::Separator {
-                MF_SEPARATOR
-            } else {
-                MF_STRING
-            };
-            if item.checked {
-                flags |= MF_CHECKED;
-            }
-            if !item.enabled {
-                flags |= MF_GRAYED;
-            }
-            let label = w32::wide(&item.label);
-            let _ = AppendMenuW(menu, flags, MENU_BASE + index, PCWSTR(label.as_ptr()));
+    let menu = crate::state::with_state(|state| {
+        if state.playlist_visible {
+            playlist_menu(state)
+        } else {
+            viewer_menu(state)
         }
-        let mut point = POINT::default();
-        let _ = GetCursorPos(&mut point);
-        let chosen = TrackPopupMenuEx(
-            menu,
-            (TPM_RETURNCMD.0 | TPM_RIGHTBUTTON.0) as u32,
-            point.x,
-            point.y,
-            hwnd,
-            None,
-        );
-        let _ = DestroyMenu(menu);
-        if chosen.0 <= 0 {
-            return None;
-        }
-        items
-            .get((chosen.0 as usize) - MENU_BASE)
-            .map(|item| item.action)
-    }
+    })??;
+    menu.track(hwnd)
 }
 
-/// The menu of the list of files: what to do with the rows, all of them or the selected ones.
-/// The picture's own menu is one `Esc` away, so this one leaves the zoom out.
-fn playlist_menu(hwnd: HWND, repeat: bool) -> Option<Action> {
-    // One id list for the menu and its sub-menu: a leaf id is only ever asked for after it was
-    // handed out, so both can share the running counter.
-    let mut by_id: Vec<(usize, Action)> = Vec::new();
-    unsafe {
-        let menu = CreatePopupMenu().ok()?;
-        let sort = CreatePopupMenu().ok()?;
-        let mut add = |target: HMENU, label: &str, action: Action, checked: bool| {
-            let id = MENU_BASE + by_id.len();
-            by_id.push((id, action));
-            let mut flags = MF_STRING;
-            if checked {
-                flags |= MF_CHECKED;
-            }
-            let text = w32::wide(label);
-            let _ = AppendMenuW(target, flags, id, PCWSTR(text.as_ptr()));
-        };
-        let line = |target: HMENU| {
-            let _ = AppendMenuW(target, MF_SEPARATOR, 0, PCWSTR(std::ptr::null()));
-        };
+fn viewer_menu(state: &State) -> Option<ContextMenu> {
+    use Action::*;
+    let mut menu = ContextMenu::new()?;
+    let root = menu.root();
+    let shown = state.photos.current().is_some();
+    let zoomable = state.frame().is_some();
+    let slideshow = state.slideshow_running || state.slideshow_paused;
 
-        add(menu, "Add a file to the list…  A", Action::AddFiles, false);
-        add(
-            menu,
-            "Add a folder to the list…  Shift+A",
-            Action::AddFolder,
-            false,
-        );
-        add(menu, "Open playlist…  Ctrl+O", Action::OpenPlaylist, false);
-        add(menu, "Save playlist…  Ctrl+S", Action::SavePlaylist, false);
-        line(menu);
-        add(
-            menu,
-            "Remove selected from playlist  Del",
-            Action::RemoveSelected,
-            false,
-        );
-        add(
-            menu,
-            "Send selected to Recycle Bin  Ctrl+Del",
-            Action::DeleteSelected,
-            false,
-        );
-        add(
-            menu,
-            "Show the containing folder in Explorer",
-            Action::ShowFolder,
-            false,
-        );
-        line(menu);
-        add(sort, "Name ascending", Action::SortByName(false), false);
-        add(sort, "Name descending", Action::SortByName(true), false);
-        add(sort, "Shuffle", Action::ShufflePlaylist, false);
-        let _ = AppendMenuW(
-            menu,
-            MF_POPUP,
-            sort.0 as usize,
-            PCWSTR(w32::wide("Sort by").as_ptr()),
-        );
-        line(menu);
-        add(menu, "Repeat the slideshow", Action::ToggleRepeat, repeat);
-        add(
-            menu,
-            "Show / hide the list of files  L",
-            Action::ShowPlaylist,
-            true,
-        );
-        line(menu);
-        add(menu, "&About…", Action::About, false);
+    let nav = menu.group("Navigation")?;
+    menu.add(nav, Next, "Next image\t→ / ↓", shown, false);
+    menu.add(nav, Previous, "Previous image\t← / ↑", shown, false);
+    menu.add(nav, First, "Go to first image\tHome", shown, false);
+    menu.add(nav, Last, "Go to last image\tEnd", shown, false);
+    menu.line(nav);
+    menu.add(
+        nav,
+        RandomOrder,
+        "Random image order\tCtrl+A",
+        shown,
+        state.knobs.random_order,
+    );
 
-        let mut point = POINT::default();
-        let _ = GetCursorPos(&mut point);
-        let chosen = TrackPopupMenuEx(
-            menu,
-            (TPM_RETURNCMD.0 | TPM_RIGHTBUTTON.0) as u32,
-            point.x,
-            point.y,
-            hwnd,
-            None,
+    let zoom_menu = menu.group("Zoom")?;
+    menu.add(zoom_menu, ZoomIn, "Zoom in\t+", zoomable, false);
+    menu.add(zoom_menu, ZoomOut, "Zoom out\t−", zoomable, false);
+    menu.add(
+        zoom_menu,
+        FitOriginal,
+        "Fit image to window\t0",
+        zoomable,
+        false,
+    );
+    menu.line(zoom_menu);
+    for (index, mode) in zoom::MODES.iter().enumerate() {
+        menu.add(
+            zoom_menu,
+            ZoomMode(index),
+            &format!("{}\t{}", mode.label(), char::from(mode.hotkey() as u8)),
+            zoomable,
+            *mode == state.active_zoom_mode(),
         );
-        let _ = DestroyMenu(menu);
-        by_id
-            .iter()
-            .find(|(id, _)| *id == chosen.0 as usize)
-            .map(|(_, action)| *action)
     }
+
+    let image = menu.group("Image")?;
+    menu.add(image, Rotate, "Rotate image 90°\tR", zoomable, false);
+    menu.add(image, ImageInfo, "Image information\tI", shown, false);
+    menu.add(image, CopyImage, "Copy image to clipboard", zoomable, false);
+
+    let files = menu.group("Files")?;
+    menu.add(files, OpenFile, "Open images…\tO", true, false);
+    menu.add(files, OpenFolder, "Open folder…\tF", true, false);
+    menu.add(files, SaveAs, "Save as…\tC", shown, false);
+    menu.add(files, Rename, "Rename image…\tF2", shown, false);
+    menu.add(
+        files,
+        MoveToTarget,
+        "Quick-move image\tM",
+        shown && !state.knobs.move_to.as_os_str().is_empty(),
+        false,
+    );
+    menu.add(
+        files,
+        ShowInExplorer,
+        "Show image in Explorer\tE",
+        shown,
+        false,
+    );
+    menu.add(
+        files,
+        DeleteFile,
+        "Move image to Recycle Bin\tCtrl+Del",
+        shown,
+        false,
+    );
+
+    let playlist = menu.group("Playlist")?;
+    menu.add(playlist, ShowPlaylist, "Show playlist\tL", true, false);
+    menu.add(
+        playlist,
+        OpenPlaylist,
+        "Open playlist…\tCtrl+O",
+        true,
+        false,
+    );
+    menu.add(
+        playlist,
+        SavePlaylist,
+        "Save playlist…\tCtrl+S",
+        true,
+        false,
+    );
+    menu.add(playlist, AddFiles, "Add images…\tA", true, false);
+    menu.add(playlist, AddFolder, "Add folder…\tShift+A", true, false);
+    menu.add(
+        playlist,
+        RemoveItem,
+        "Remove image from playlist\tDel",
+        shown,
+        false,
+    );
+
+    let slides = menu.group("Slideshow")?;
+    let (action, label) = if slideshow {
+        (StopSlideshow, "Stop slideshow\tF11")
+    } else {
+        (StartSlideshow, "Start slideshow\tF11")
+    };
+    menu.add(slides, action, label, shown || slideshow, false);
+    menu.add(
+        slides,
+        ToggleSlideshowPause,
+        if state.slideshow_paused {
+            "Resume slideshow\tSpace"
+        } else {
+            "Pause slideshow\tSpace"
+        },
+        slideshow,
+        false,
+    );
+    menu.add(
+        slides,
+        ToggleRepeat,
+        "Loop slideshow",
+        shown,
+        state.knobs.loop_slideshow,
+    );
+
+    let window = menu.group("Window")?;
+    menu.add(
+        window,
+        ToggleToolBar,
+        "Show toolbar\tT",
+        true,
+        state.toolbar_visible,
+    );
+    menu.add(
+        window,
+        ToggleFullscreen,
+        "Full screen\tF12",
+        true,
+        state.is_fullscreen,
+    );
+    menu.add(
+        window,
+        ToggleBorderless,
+        "Hide window frame\tF10",
+        true,
+        state.is_borderless && !state.is_fullscreen,
+    );
+
+    menu.line(root);
+    menu.add(root, Settings, "Settings…\tS", true, false);
+    menu.add(root, Shortcuts, "Keyboard shortcuts…\tF1", true, false);
+    menu.add(root, About, "About RustedGlass…", true, false);
+    menu.add(root, Quit, "Quit\tCtrl+Q", true, false);
+    Some(menu)
 }
+
+fn playlist_menu(state: &State) -> Option<ContextMenu> {
+    use Action::*;
+    let mut menu = ContextMenu::new()?;
+    let root = menu.root();
+    let shown = !state.photos.is_empty();
+
+    menu.add(root, AddFiles, "Add images…\tA", true, false);
+    menu.add(root, AddFolder, "Add folder…\tShift+A", true, false);
+    menu.add(root, OpenPlaylist, "Open playlist…\tCtrl+O", true, false);
+    menu.add(root, SavePlaylist, "Save playlist…\tCtrl+S", true, false);
+    menu.line(root);
+    menu.add(
+        root,
+        RemoveSelected,
+        "Remove selected from playlist\tDel",
+        shown,
+        false,
+    );
+    menu.add(
+        root,
+        DeleteSelected,
+        "Move selected to Recycle Bin\tCtrl+Del",
+        shown,
+        false,
+    );
+    menu.add(
+        root,
+        ShowFolder,
+        "Show selected image in Explorer",
+        shown,
+        false,
+    );
+    let sort = menu.group("Sort by")?;
+    menu.add(sort, SortByName(false), "Name ascending", shown, false);
+    menu.add(sort, SortByName(true), "Name descending", shown, false);
+    menu.add(sort, ShufflePlaylist, "Shuffle rows", shown, false);
+    menu.line(root);
+    menu.add(
+        root,
+        ToggleRepeat,
+        "Loop slideshow",
+        true,
+        state.knobs.loop_slideshow,
+    );
+    menu.add(root, ShowPlaylist, "Hide playlist\tL", true, false);
+    menu.add(root, About, "About RustedGlass…", true, false);
+    Some(menu)
+}
+
+mod native;
+use native::ContextMenu;

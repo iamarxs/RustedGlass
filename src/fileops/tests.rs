@@ -6,31 +6,19 @@ fn temp_dir(name: &str) -> PathBuf {
 }
 
 #[test]
-fn a_pending_operation_runs_with_what_the_user_typed() {
+fn save_as_copies_the_original_bytes_to_the_selected_name() {
     let dir = temp_dir("pending");
     fs::create_dir_all(&dir).unwrap();
     let file = dir.join("cat.png");
     fs::write(&file, b"pixels").unwrap();
 
-    assert_eq!(Pending::Rename.prefill(&file), "cat");
-    assert_eq!(
-        Pending::Rename.apply(&file, "kit").unwrap(),
-        dir.join("kit.png")
-    );
-
-    let target = temp_dir("pending-target");
-    fs::create_dir_all(&target).unwrap();
-    let copied = Pending::CopyTo(PathBuf::new())
-        .apply(&dir.join("kit.png"), &target.display().to_string())
-        .unwrap();
-    assert_eq!(copied, target.join("kit.png"));
-    assert!(
-        dir.join("kit.png").exists(),
-        "a copy leaves the original alone"
-    );
+    let target = dir.join("kit.png");
+    fs::write(&target, b"previous").unwrap();
+    crate::atomic_file::copy(&file, &target).unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"pixels");
+    assert_eq!(fs::read(&file).unwrap(), b"pixels");
 
     fs::remove_dir_all(&dir).ok();
-    fs::remove_dir_all(&target).ok();
 }
 
 #[test]
@@ -49,7 +37,6 @@ fn rename_and_move_keep_the_extension_and_refuse_bad_names() {
     assert!(rename(&file, "no/path").is_err());
     assert!(rename(&file, "NUL.png").is_err());
     assert!(rename(&file, "name.").is_err());
-    assert!(copy_to(&file, Path::new("")).is_err());
     let capitalized = rename(&file, "Cat.png").unwrap();
     assert!(fs::read_dir(&dir)
         .unwrap()
@@ -66,15 +53,10 @@ fn rename_and_move_keep_the_extension_and_refuse_bad_names() {
     assert_eq!(moved, other.join("kit.png"));
     assert!(!dir.join("kit.png").exists());
 
-    // Copying leaves the original in place.
-    let copy = copy_to(&moved, &dir).unwrap();
-    assert_eq!(copy, dir.join("kit.png"));
-    assert!(moved.exists());
-
-    delete(&copy).unwrap();
-    assert!(!copy.exists(), "moved to the recycle bin");
+    delete(&moved).unwrap();
+    assert!(!moved.exists(), "moved to the recycle bin");
     assert!(
-        delete(&copy).is_err(),
+        delete(&moved).is_err(),
         "a second delete reports the missing file"
     );
 
@@ -103,19 +85,14 @@ fn transfers_number_collisions_and_rename_preserves_the_destination() {
     assert!(rename(&source, "other.png").is_err());
     assert_eq!(fs::read(dir.join("other.png")).unwrap(), b"keep");
     assert_eq!(
-        copy_to(&source, &target).unwrap(),
-        target.join("cat (2).png")
-    );
-    assert_eq!(
         move_to(&source, &target).unwrap(),
-        target.join("cat (3).png")
+        target.join("cat (2).png")
     );
     assert_eq!(fs::read(target.join("cat.png")).unwrap(), b"original");
     assert_eq!(fs::read(target.join("cat (2).png")).unwrap(), b"source");
-    assert_eq!(fs::read(target.join("cat (3).png")).unwrap(), b"source");
     assert!(!source.exists());
 
-    for file in ["cat.png", "cat (2).png", "cat (3).png"] {
+    for file in ["cat.png", "cat (2).png"] {
         fs::remove_file(target.join(file)).unwrap();
     }
     fs::remove_file(dir.join("other.png")).unwrap();

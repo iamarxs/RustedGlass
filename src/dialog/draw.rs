@@ -32,10 +32,18 @@ pub fn draw(dialog: &Dialog, hdc: HDC, width: i32, height: i32) {
         for (index, row) in rows(dialog) {
             // A check box row has its box in the control and its text here, right of the box.
             let x = match row.kind {
-                Kind::CheckBox => CHECK_LABEL_X,
+                Kind::CheckBox => CHECK_LABEL_X + row.indent(),
                 Kind::TextField | Kind::PathField => MARGIN,
             };
-            w32::draw_text(hdc, x, row_y(index) + ROW_LABEL_TOP, row.label, TEXT_COLOR);
+            let disabled = row.key == FILES_MAXIMIZED
+                && controls::checkbox_handle(index)
+                    .is_some_and(|handle| !IsWindowEnabled(handle).as_bool());
+            let color = if disabled {
+                COLORREF(0x0088_8888)
+            } else {
+                TEXT_COLOR
+            };
+            w32::draw_text(hdc, x, row_y(index) + ROW_LABEL_TOP, row.label, color);
         }
     }
 }

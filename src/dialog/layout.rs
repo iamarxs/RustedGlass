@@ -1,20 +1,33 @@
 use super::*;
+use windows::Win32::Foundation::RECT;
 /// Opens a panel: builds the child controls of `parent`. The caller stores the `Dialog` in its
 /// own state; this only mirrors it into Win32 controls.
-pub fn open(
-    dialog: &Dialog,
-    config: &Config,
-    parent: HWND,
-    pending: Option<&Pending>,
-    file: Option<&Path>,
-) {
+pub fn open(dialog: &Dialog, config: &Config, parent: HWND, file: Option<&Path>) {
     close();
     SCROLL.with(|cell| cell.set(0));
     SCROLL_MAX.with(|cell| cell.set(0));
     let instance = w32::instance();
     let HGDIOBJ(font) = crate::style::font();
     let all = rows(dialog);
+    let mut tooltip = if *dialog == Dialog::Settings {
+        Tooltip::new(parent, Some(420))
+    } else {
+        None
+    };
     for (index, row) in all {
+        if let Some(tooltip) = &mut tooltip {
+            tooltip.add_area(
+                parent,
+                BASE_ID + index,
+                RECT {
+                    left: MARGIN,
+                    top: row_y(index),
+                    right: settings_width() - MARGIN,
+                    bottom: row_y(index + 1),
+                },
+                row.tooltip,
+            );
+        }
         let class = w32::wide(match row.kind {
             Kind::CheckBox => "BUTTON",
             Kind::TextField | Kind::PathField => "EDIT",
@@ -40,7 +53,7 @@ pub fn open(
             Kind::TextField | Kind::PathField => WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER,
         } | extra;
         let x = match row.kind {
-            Kind::CheckBox => MARGIN,
+            Kind::CheckBox => MARGIN + row.indent(),
             Kind::TextField => MARGIN + LABEL_WIDTH + 8,
             Kind::PathField => MARGIN + PATH_LABEL_WIDTH,
         };
@@ -79,9 +92,16 @@ pub fn open(
                     );
                 }
                 if row.kind == Kind::CheckBox {
-                    set_checked(handle, config.get_bool(row.key, row.default == "true"));
+                    let checked = match row.key {
+                        ALWAYS_MAXIMIZED | FILES_MAXIMIZED => config.get_saved_bool(row.key, false),
+                        _ => config.get_bool(row.key, row.default == "true"),
+                    };
+                    set_checked(handle, checked);
                 }
                 CONTROLS.with(|controls| controls.borrow_mut().push((BASE_ID + index, handle)));
+                if let Some(tooltip) = &mut tooltip {
+                    tooltip.add_control(parent, handle, row.tooltip);
+                }
             }
             Err(error) => eprintln!(
                 "rustedglass: could not create the {} control ({})",
@@ -94,7 +114,7 @@ pub fn open(
             let (x, y, width, height) = pick_rect(row_y(index));
             if let Ok(handle) = create(
                 w32::wide("BUTTON").as_ptr(),
-                w32::wide("Pick…").as_ptr(),
+                w32::wide("Browse…").as_ptr(),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
                 x,
                 y,
@@ -114,12 +134,19 @@ pub fn open(
                     )
                 };
                 CONTROLS.with(|controls| controls.borrow_mut().push((PICK_BASE + index, handle)));
+                if let Some(tooltip) = &mut tooltip {
+                    tooltip.add_control(parent, handle, row.tooltip);
+                }
             }
         }
     }
+    SETTINGS_TOOLTIP.replace(tooltip);
+    if *dialog == Dialog::Settings {
+        controls::enable_file_maximize(!config.get_saved_bool(ALWAYS_MAXIMIZED, false));
+    }
     if matches!(dialog, Dialog::Text(_)) {
         let class = w32::wide("EDIT");
-        let text = w32::wide(&prefill(pending, file));
+        let text = w32::wide(&file.map_or_else(String::new, crate::fileops::stem));
         let style =
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32);
         if let Ok(handle) = create(
