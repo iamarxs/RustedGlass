@@ -1,0 +1,108 @@
+name: Build RustedGlass release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Test, build, and package
+        shell: pwsh
+        run: |
+          $env:CARGO_TARGET_DIR = Join-Path $PWD 'target'
+
+          cargo test --locked
+          if ($LASTEXITCODE -ne 0) { throw 'cargo test failed' }
+
+          ./build.ps1
+
+          $reported = (& ./build/RustedGlass.exe --version | Out-String).Trim()
+          if ($reported -notmatch '^RustedGlass ([0-9]+\.[0-9]+\.[0-9]+)$') {
+              throw "Unexpected version output: $reported"
+          }
+          $version = $Matches[1]
+
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -cne "v$version") {
+              throw "Tag $env:GITHUB_REF_NAME does not match EXE version $version"
+          }
+
+          New-Item -ItemType Directory -Path dist | Out-Null
+          Compress-Archive -LiteralPath ./build/RustedGlass.exe `
+            -DestinationPath "dist/RustedGlass-$version-x86_64-pc-windows-msvc.zip"
+          Copy-Item -LiteralPath ./build/RustedGlass.exe -Destination ./dist/RustedGlass-x64.exe
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: rustedglass-windows-x64
+          path: dist/
+          if-no-files-found: error
+          overwrite: true
+
+  sign:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: rustedglass-windows-x64
+          path: dist
+
+      - name: Create update manifest
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          filename="RustedGlass-x64.exe"
+          hash=$(sha256sum "dist/$filename" | cut -d ' ' -f 1)
+
+          jq -n --arg version "$version" \
+            --arg target "x86_64-pc-windows-msvc" \
+            --arg filename "$filename" --arg sha256 "$hash" \
+            '{version: $version, target: $target, filename: $filename, sha256: $sha256}' \
+            > dist/update.json
+
+      - name: Sign and verify update manifest
+        shell: bash
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          key_file=$(mktemp)
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key_file"
+          unset UPDATE_SIGNING_KEY
+
+          openssl pkeyutl -sign -rawin -inkey "$key_file" \
+            -in dist/update.json -out dist/update.json.sig
+
+          openssl pkeyutl -verify -rawin -pubin -inkey assets/update-public.pem \
+            -in dist/update.json -sigfile dist/update.json.sig
+
+      - name: Create draft GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/RustedGlass-$version-x86_64-pc-windows-msvc.zip" \
+            dist/RustedGlass-x64.exe dist/update.json dist/update.json.sig \
+            --draft --verify-tag --generate-notes
