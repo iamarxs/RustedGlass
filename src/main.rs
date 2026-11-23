@@ -26,6 +26,7 @@ mod state;
 mod style;
 mod tools;
 mod tooltip;
+mod update_check;
 mod view;
 mod w32;
 mod zoom;
