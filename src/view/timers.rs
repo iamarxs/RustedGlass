@@ -12,9 +12,11 @@ thread_local! {
 
 pub(super) fn sync(hwnd: HWND) {
     state::with_state(|state| {
-        let slide =
-            (state.slideshow_running && !state.slideshow_elapsed && !state.navigation_pending)
-                .then_some((state.slide_revision, state.knobs.slideshow_bounds()));
+        let slide = (state.slideshow_running
+            && !state.slideshow_elapsed
+            && !state.navigation_pending
+            && !state.load_pending)
+            .then_some((state.slide_revision, state.knobs.slideshow_bounds()));
         let delay = state.frame_delay_ms();
         let frame = (delay != 0).then_some((state.frame_revision, delay));
 
@@ -79,6 +81,8 @@ pub(super) fn frame_due(hwnd: HWND) -> bool {
 pub(super) fn clear(hwnd: HWND) {
     SLIDE.with(|timer| schedule(hwnd, SLIDESHOW_TIMER, timer, None, || 0));
     FRAME.with(|timer| schedule(hwnd, FRAME_TIMER, timer, None, || 0));
+    // The poll timer keeps its own id, so the loop ends with the window.
+    let _ = unsafe { KillTimer(Some(hwnd), super::EVENT_TIMER) };
 }
 
 #[cfg(test)]

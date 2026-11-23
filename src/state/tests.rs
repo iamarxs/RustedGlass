@@ -16,11 +16,11 @@ fn defaults_are_as_expected() {
     let knobs = Knobs::from(&fresh_config());
     assert_eq!(knobs.zoom_mode, ZoomMode::AutoZoom);
     assert!(knobs.loop_back, "EnableLoopBackNavigation is on by default");
-    assert!(!knobs.auto_sibling_dir);
     assert!(!knobs.random_order);
     assert!(knobs.loop_slideshow);
     assert_eq!(knobs.slideshow_seconds, 5);
-    assert_eq!(knobs.zoom_speed, 0.0);
+    assert_eq!(knobs.slideshow_seconds_to, 5);
+    assert_eq!(knobs.zoom_step_percent, 12.0);
     assert_eq!(knobs.pan_speed, 20);
     assert!(knobs.move_to.as_os_str().is_empty());
 }
@@ -224,7 +224,10 @@ fn a_random_slideshow_interval_stays_between_the_two_settings() {
 fn zooming_takes_over_the_factor_the_mode_gave() {
     let mut state = State::new(crate::test_path("unused-config.json"), &[]);
     state.zoom_mode = ZoomMode::ScaleToFit;
-    state.zoom_by((200, 200), zoom::zoom_step(0.0, 120));
+    state.zoom_by(
+        (200, 200),
+        zoom::zoom_step(state.knobs.zoom_step_percent, 120),
+    );
     assert!(state.scale > 1.0, "the mode factor was taken over");
     let zoomed = state.scale;
     state.zoom_by((200, 200), 0.5);

@@ -38,10 +38,10 @@ fn folder_list_skips_other_files() {
 
     let mut photos = PhotoList::from_path(&dir.join("a.jpg"), false, false, image_formats());
     assert_eq!(photos.index, 0);
-    assert!(photos.step(1, false, false, (false, false)));
+    assert!(photos.step(1, false));
     assert_eq!(file_name(photos.current().unwrap()), "b.png");
-    assert!(!photos.step(1, false, false, (false, false))); // no loop, no sibling folder
-    assert!(photos.step(-1, true, false, (false, false))); // wrap back to the first
+    assert!(!photos.step(1, false));
+    assert!(photos.step(-1, true)); // wrap back to the first
     assert_eq!(file_name(photos.current().unwrap()), "a.jpg");
 
     fs::remove_dir_all(&dir).ok();
@@ -69,14 +69,11 @@ fn shuffle_is_a_permutation_and_browsing_follows_it() {
     let mut walked: Vec<String> = Vec::new();
     for _ in 0..3 {
         walked.push(file_name(photos.current().unwrap()));
-        assert!(
-            photos.step(1, false, false, (false, false)),
-            "never stuck before the last entry"
-        );
+        assert!(photos.step(1, false), "never stuck before the last entry");
     }
     walked.push(file_name(photos.current().unwrap()));
     assert!(
-        !photos.step(1, false, false, (false, false)),
+        !photos.step(1, false),
         "without loop_back the last entry has no next"
     );
     let mut sorted = walked;
@@ -216,10 +213,7 @@ fn entries_can_be_added_and_removed() {
 fn an_empty_playlist_walks_nowhere() {
     let mut photos = PhotoList::empty();
     assert!(photos.is_empty());
-    assert!(
-        !photos.step(1, true, false, (false, false)),
-        "no divide by zero on an empty list"
-    );
+    assert!(!photos.step(1, true), "no divide by zero on an empty list");
     assert_eq!(photos.current(), None);
     assert_eq!(photos.visible().len(), 0);
     photos.shuffle(7);
@@ -248,4 +242,128 @@ fn recursive_scan_skips_junctions_but_reads_real_subfolders() {
     fs::remove_dir(nested).unwrap();
     fs::remove_dir(dir).unwrap();
     assert_eq!(images, vec![image]);
+}
+
+#[test]
+fn only_row_changes_move_the_rows_token() {
+    assert_ne!(
+        PhotoList::empty().rows_token(),
+        PhotoList::empty().rows_token(),
+        "a fresh list never reuses a token, even with the same rows"
+    );
+
+    let mut photos = PhotoList::empty();
+    photos.files = ["a.png", "b.png", "a.png"].map(PathBuf::from).to_vec();
+    photos.index = 1;
+    let built = photos.rows_token();
+    assert!(photos.step(1, false));
+    photos.jump_to(0);
+    photos.reset_random_pass();
+    photos.pick_random(9);
+    assert_eq!(
+        photos.rows_token(),
+        built,
+        "moving the selection is not a row change"
+    );
+
+    photos.index = 2;
+    photos.add_files(&[PathBuf::from("c.png")]);
+    let appended = photos.rows_token();
+    assert_ne!(appended, built, "an append is a row change");
+
+    photos.replace_path(Path::new("a.png"), Path::new("z.png"));
+    let renamed = photos.rows_token();
+    assert_ne!(renamed, appended, "a renamed path is a row change");
+    assert_eq!(
+        photos.files,
+        ["z.png", "b.png", "z.png", "c.png"]
+            .map(PathBuf::from)
+            .to_vec(),
+        "every occurrence is renamed where it stands"
+    );
+    assert_eq!(photos.index, 2, "the shown row does not move");
+
+    photos.replace_path(Path::new("missing.png"), Path::new("other.png"));
+    assert_eq!(
+        photos.rows_token(),
+        renamed,
+        "replacing nothing leaves the token alone"
+    );
+
+    photos.sort_by_name(false);
+    let sorted = photos.rows_token();
+    assert_ne!(sorted, renamed, "a sort is a row change");
+
+    photos.shuffle(3);
+    let shuffled = photos.rows_token();
+    assert_ne!(shuffled, sorted, "a shuffle is a row change");
+
+    photos.move_row(0, 1);
+    let moved = photos.rows_token();
+    assert_ne!(moved, shuffled, "a moved row is a row change");
+
+    photos.remove_at(0);
+    assert_ne!(photos.rows_token(), moved, "a removal is a row change");
+}
+
+#[test]
+fn bulk_removal_keeps_the_order_and_the_shown_row() {
+    let mut photos = PhotoList::empty();
+    photos.files = ["z.png", "a.png", "z.png", "b.png", "c.png"]
+        .map(PathBuf::from)
+        .to_vec();
+    photos.index = 4;
+    // Unsorted, one row twice, one past the end.
+    assert_eq!(photos.remove_rows(&[3, 1, 3, 99]), 2);
+    assert_eq!(
+        photos.files,
+        ["z.png", "z.png", "c.png"].map(PathBuf::from).to_vec()
+    );
+    assert_eq!(photos.index, 2, "the shown row follows its picture down");
+    assert_eq!(photos.current(), Some(&PathBuf::from("c.png")));
+
+    assert_eq!(photos.remove_rows(&[2]), 1);
+    assert_eq!(photos.index, 1, "the end falls back to the previous row");
+    assert_eq!(
+        photos.current(),
+        Some(&PathBuf::from("z.png")),
+        "the second occurrence survives"
+    );
+
+    assert_eq!(photos.remove_rows(&[0]), 1);
+    assert_eq!(photos.index, 0);
+    assert_eq!(photos.remove_rows(&[0]), 1);
+    assert!(photos.is_empty());
+    assert_eq!(photos.remove_rows(&[0]), 0, "nothing left to remove");
+}
+
+#[test]
+fn bulk_removal_of_a_shuffled_list_keeps_the_visible_order() {
+    let mut photos = PhotoList::empty();
+    photos.files = ["a.png", "b.png", "c.png", "d.png"]
+        .map(PathBuf::from)
+        .to_vec();
+    photos.shuffle(1);
+    let visible: Vec<PathBuf> = photos.visible().into_iter().cloned().collect();
+    photos.index = 2;
+    let shown = visible[2].clone();
+
+    assert_eq!(photos.remove_rows(&[3, 0]), 2);
+    let left = vec![&visible[1], &shown];
+    assert_eq!(photos.visible(), left);
+    assert_eq!(photos.order.len(), 2, "the permutation is remapped");
+    assert_eq!(photos.index, 1);
+    assert_eq!(photos.current(), Some(&shown));
+}
+
+#[test]
+fn matching_removal_drops_every_occurrence_in_one_pass() {
+    let mut photos = PhotoList::empty();
+    photos.files = ["a.png", "b.png", "a.png", "a.png"]
+        .map(PathBuf::from)
+        .to_vec();
+    photos.index = 2;
+    photos.remove_matching(|path| path == Path::new("a.png"));
+    assert_eq!(photos.files, vec![PathBuf::from("b.png")]);
+    assert_eq!(photos.index, 0);
 }

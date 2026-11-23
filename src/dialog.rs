@@ -115,11 +115,7 @@ pub fn scroll_by(delta: i32) {
 /// creating and reading the controls must all use it.
 fn rows(dialog: &Dialog) -> Vec<(usize, &'static Row)> {
     match dialog {
-        Dialog::Settings => ROWS
-            .iter()
-            .enumerate()
-            .map(|(index, row)| (index, row))
-            .collect(),
+        Dialog::Settings => ROWS.iter().enumerate().collect(),
         _ => Vec::new(),
     }
 }
@@ -203,6 +199,9 @@ fn button_label(dialog: &Dialog) -> &'static str {
 fn value_text(config: &Config, row: &Row) -> String {
     match row.kind {
         Kind::CheckBox => String::new(),
+        Kind::TextField if row.key == crate::zoom::STEP_PERCENT_KEY => {
+            config.zoom_step_percent().to_string()
+        }
         Kind::TextField if row.key == "SlideshowIntervalTo" => config
             .get_f64(row.key, config.get_f64("SlideshowInterval", 5.0))
             .to_string(),
@@ -263,7 +262,9 @@ pub use picker::{pick_files, pick_folder, pick_image_destination, pick_one_file,
 mod layout;
 pub use layout::{open, resize_shortcuts};
 
-mod controls;
+mod keyboard;
+
+pub(crate) mod controls;
 use controls::{checked, create, field_text, prompt_key, set_checked, untheme};
 pub use controls::{
     click_checkbox_label, close, normalize_slide_durations, prompt_text, set_field_text,

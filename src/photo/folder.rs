@@ -1,5 +1,6 @@
 use super::*;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::fs::MetadataExt;
 use windows::core::PCWSTR;
 use windows::Win32::UI::Shell::StrCmpLogicalW;
 pub fn collect(
@@ -18,62 +19,42 @@ pub fn collect(
 
         for entry in entries.flatten() {
             let path = entry.path();
-
-            if path.is_dir() {
-                if recurse && !is_directory_link(&path) && !is_skipped(&path, include_hidden) {
+            // The enumeration already knows the type, so a plain entry costs no stat.
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                // Preserve the exclusion for every directory reparse point.
+                if recurse
+                    && entry.metadata().is_ok_and(|metadata| {
+                        !is_reparse_point(&metadata) && !skip_attributes(&metadata, include_hidden)
+                    })
+                {
                     stack.push(path);
                 }
                 continue;
             }
 
-            if is_skipped(&path, include_hidden) || !is_image_file(&path, formats) {
+            if !is_image_file(&path, formats) {
                 continue;
             }
-            files.push(path);
+            let metadata = entry.metadata().and_then(|metadata| {
+                if is_reparse_point(&metadata) {
+                    path.metadata()
+                } else {
+                    Ok(metadata)
+                }
+            });
+            if metadata.is_ok_and(|metadata| {
+                metadata.is_file() && !skip_attributes(&metadata, include_hidden)
+            }) {
+                files.push(path);
+            }
         }
     }
 
     sort_names(&mut files, false, None);
     files
-}
-
-/// The next sibling folder of `dir` (in sorted order) that contains images.
-pub(super) fn sibling_images(
-    dir: Option<&Path>,
-    step: i32,
-    include_hidden: bool,
-    recurse: bool,
-    formats: &[String],
-) -> Option<Vec<PathBuf>> {
-    let dir = dir?;
-    let parent = dir.parent()?;
-    let mut siblings: Vec<PathBuf> = fs::read_dir(parent)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect();
-
-    sort_names(&mut siblings, false, None);
-
-    let current = dir.to_string_lossy().to_lowercase();
-    let start = siblings
-        .iter()
-        .position(|s| s.to_string_lossy().to_lowercase() == current)?;
-
-    let mut index = start as i32 + step;
-    while index >= 0 && (index as usize) < siblings.len() {
-        let candidate = &siblings[index as usize];
-        if !is_skipped(candidate, include_hidden) {
-            let files = collect(candidate, include_hidden, recurse, formats);
-            if !files.is_empty() {
-                return Some(files);
-            }
-        }
-        index += step;
-    }
-
-    None
 }
 
 pub(super) fn sort_names(
@@ -107,40 +88,15 @@ pub(super) fn sort_names(
     selected
 }
 
-fn is_directory_link(path: &Path) -> bool {
-    let Ok(metadata) = path.symlink_metadata() else {
-        return true;
-    };
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    }
-    #[cfg(not(windows))]
-    metadata.is_symlink()
+fn is_reparse_point(metadata: &fs::Metadata) -> bool {
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
-/// Windows: system entries are always skipped, hidden ones only when hidden browsing is off.
-fn is_skipped(path: &Path, include_hidden: bool) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
-        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-
-        let Ok(meta) = path.metadata() else {
-            return false;
-        };
-        let attributes = meta.file_attributes();
-
-        return attributes & FILE_ATTRIBUTE_SYSTEM != 0
-            || (!include_hidden && attributes & FILE_ATTRIBUTE_HIDDEN != 0);
-    }
-
-    #[cfg(not(windows))]
-    {
-        let _ = include_hidden;
-        false
-    }
+fn skip_attributes(metadata: &fs::Metadata, include_hidden: bool) -> bool {
+    const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+    let attributes = metadata.file_attributes();
+    attributes & FILE_ATTRIBUTE_SYSTEM != 0
+        || (!include_hidden && attributes & FILE_ATTRIBUTE_HIDDEN != 0)
 }

@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const IMAGE_FORMATS: &str = ".apng;.bmp;.dds;.exr;.farbfeld;.ff;.gif;.gifv;.hdr;.ico;.jfif;.jpe;.jpeg;.jpg;.pam;.pbm;.pgm;.png;.pnm;.ppm;.qoi;.tga;.tif;.tiff;.webp";
 
@@ -38,6 +39,12 @@ impl XorShift64 {
     }
 }
 
+/// A value no earlier list or row change has used, so a stale token never matches a fresh one.
+fn next_rows_token() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 /// An image list plus the position in it.
 pub struct PhotoList {
     pub files: Vec<PathBuf>,
@@ -46,6 +53,7 @@ pub struct PhotoList {
     /// The playlist row order, as indices into `files`. Empty means `files` order.
     pub order: Vec<usize>,
     random_pass: Option<Vec<usize>>,
+    rows_token: u64,
 }
 
 impl PhotoList {
@@ -57,23 +65,25 @@ impl PhotoList {
             formats: image_formats(),
             order: Vec::new(),
             random_pass: None,
+            rows_token: next_rows_token(),
         }
     }
 
-    /// Builds the list for the folder containing `path` (a file or a directory).
+    /// Builds the list for `path`, recursing only when a directory was opened.
     pub fn from_path(
         path: &Path,
         include_hidden: bool,
         recurse: bool,
         formats: Vec<String>,
     ) -> Self {
-        let dir = if path.is_dir() {
+        let opened_directory = path.is_dir();
+        let dir = if opened_directory {
             path.to_path_buf()
         } else {
             path.parent().map(Path::to_path_buf).unwrap_or_default()
         };
 
-        let files = collect(&dir, include_hidden, recurse, &formats);
+        let files = collect(&dir, include_hidden, recurse && opened_directory, &formats);
         let wanted = if path.is_file() { Some(path) } else { None };
 
         let index = match wanted {
@@ -87,7 +97,17 @@ impl PhotoList {
             formats,
             order: Vec::new(),
             random_pass: None,
+            rows_token: next_rows_token(),
         }
+    }
+
+    /// Changes with any change of the visible rows, not with the shown row alone.
+    pub(crate) fn rows_token(&self) -> u64 {
+        self.rows_token
+    }
+
+    fn rows_changed(&mut self) {
+        self.rows_token = next_rows_token();
     }
 
     pub fn len(&self) -> usize {
@@ -121,6 +141,7 @@ impl PhotoList {
     }
 
     /// The entries in the order browsing and the playlist menu use.
+    #[cfg(test)] // only the PhotoList tests and the older save path used the collected form
     pub fn visible(&self) -> Vec<&PathBuf> {
         self.visible_rows().collect()
     }
@@ -156,6 +177,7 @@ impl PhotoList {
         }
         self.order = order;
         self.index = 0;
+        self.rows_changed();
     }
 
     /// Appends new images without changing the current row or the visible order.
@@ -165,9 +187,14 @@ impl PhotoList {
             .filter(|path| is_image_file(path, &self.formats))
             .cloned()
             .collect();
+        self.extend_files(added)
+    }
+
+    pub(crate) fn extend_files(&mut self, added: Vec<PathBuf>) -> usize {
         let count = added.len();
         if count != 0 {
             self.reset_random_pass();
+            self.rows_changed();
         }
         if !self.order.is_empty() {
             self.order
@@ -185,6 +212,7 @@ impl PhotoList {
             formats,
             order: Vec::new(),
             random_pass: None,
+            rows_token: next_rows_token(),
         };
         list.add_files(paths);
         list.sort_by_name(false);
@@ -214,12 +242,27 @@ impl PhotoList {
             self.index
         }
         .min(self.files.len().saturating_sub(1));
+        self.rows_changed();
         Some(removed)
     }
 
     /// Removes the shown entry from the playlist, leaving the file on disk.
     pub fn remove_current(&mut self) -> Option<PathBuf> {
         self.remove_at(self.index)
+    }
+
+    /// Renames every row holding `previous`, keeping the order and the shown row.
+    pub(crate) fn replace_path(&mut self, previous: &Path, target: &Path) {
+        let mut replaced = false;
+        for entry in &mut self.files {
+            if entry == previous {
+                *entry = target.to_path_buf();
+                replaced = true;
+            }
+        }
+        if replaced {
+            self.rows_changed();
+        }
     }
 
     /// Moves to a visible position, as the playlist does.
@@ -232,15 +275,8 @@ impl PhotoList {
         self.current()
     }
 
-    /// Moves `step` positions, optionally wrapping, and optionally jumping to the next sibling
-    /// folder that holds images when the ends of this folder are reached.
-    pub fn step(
-        &mut self,
-        step: i32,
-        loop_back: bool,
-        auto_sibling_dir: bool,
-        (include_hidden, recurse): (bool, bool),
-    ) -> bool {
+    /// Moves within the list, optionally wrapping at either end.
+    pub fn step(&mut self, step: i32, loop_back: bool) -> bool {
         let count = self.files.len() as i32;
         if count == 0 {
             return false;
@@ -257,25 +293,6 @@ impl PhotoList {
             return true;
         }
 
-        if auto_sibling_dir {
-            if let Some(files) = sibling_images(
-                self.current().and_then(|p| p.parent()),
-                step,
-                include_hidden,
-                recurse,
-                &self.formats,
-            ) {
-                self.files = files;
-                self.order.clear();
-                self.reset_random_pass();
-                self.index = 0;
-                if step < 0 {
-                    self.index = self.files.len().saturating_sub(1);
-                }
-                return true;
-            }
-        }
-
         false
     }
 }
@@ -288,7 +305,7 @@ mod tests;
 
 mod folder;
 pub use folder::collect;
-use folder::{sibling_images, sort_names};
+use folder::sort_names;
 
 mod order;
 mod random;

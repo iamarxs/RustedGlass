@@ -86,7 +86,7 @@ pub(super) fn settle_file_selection(hwnd: HWND, action: Action) -> bool {
             | Action::RemoveSelected
             | Action::DeleteSelected
             | Action::ShowFolder
-    ) && state::with_state(|state| state.navigation_pending) == Some(true)
+    ) && state::with_state(|state| state.navigation_pending || state.load_pending) == Some(true)
     {
         state::with_state(|state| {
             state.finish_navigation();

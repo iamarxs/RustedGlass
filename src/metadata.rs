@@ -1,43 +1,48 @@
-use std::path::Path;
+use std::{fs::File, io::BufReader, path::Path};
 
 use image::ImageDecoder;
 use windows::core::{w, PCWSTR};
 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
 
-pub fn show(hwnd: windows::Win32::Foundation::HWND) {
-    let path = crate::state::with_state(|state| state.photos.current().cloned()).flatten();
-    if let Some(path) = path {
-        let text = crate::w32::wide(&describe(&path));
-        let _ = unsafe {
-            MessageBoxW(
-                Some(hwnd),
-                PCWSTR(text.as_ptr()),
-                w!("Image information"),
-                MB_OK | MB_ICONINFORMATION,
-            )
-        };
-    }
+const MAX_METADATA_INPUT: u64 = 64 * 1024 * 1024;
+const MAX_METADATA_ALLOC: u64 = 32 * 1024 * 1024;
+
+pub fn show(hwnd: windows::Win32::Foundation::HWND, text: &str) {
+    let text = crate::w32::wide(text);
+    let _ = unsafe {
+        MessageBoxW(
+            Some(hwnd),
+            PCWSTR(text.as_ptr()),
+            w!("Image information"),
+            MB_OK | MB_ICONINFORMATION,
+        )
+    };
 }
 
-fn describe(path: &Path) -> String {
+pub(crate) fn describe(path: &Path) -> String {
+    describe_with_limit(path, MAX_METADATA_INPUT)
+}
+
+fn describe_with_limit(path: &Path, limit: u64) -> String {
     let full_path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
     let mut info = vec![format!("Path: {}", full_path.display())];
-    let size = path
-        .metadata()
-        .map(|metadata| format!("{} bytes", metadata.len()));
-    info.push(format!(
-        "Size: {}",
-        size.unwrap_or_else(|_| "unavailable".into())
-    ));
-
-    let Ok(mut reader) = image::ImageReader::open(path) else {
-        info.push("Format: unknown".into());
+    let Ok(file) = File::open(path) else {
+        info.push("Size: unavailable\nFormat: unknown".into());
         return info.join("\n");
     };
-    let extension_format = reader.format();
-    // Only report a format when the file contents identify it.
-    reader.clear_format();
-    let Ok(mut reader) = reader.with_guessed_format() else {
+    let Ok(stat) = file.metadata() else {
+        info.push("Size: unavailable\nFormat: unknown".into());
+        return info.join("\n");
+    };
+    let size = stat.len();
+    info.push(format!("Size: {size} bytes"));
+    if !stat.is_file() {
+        info.push("Format: unknown".into());
+        return info.join("\n");
+    }
+
+    // Only report a format when the small header read identifies it.
+    let Ok(mut reader) = image::ImageReader::new(BufReader::new(file)).with_guessed_format() else {
         info.push("Format: unknown".into());
         return info.join("\n");
     };
@@ -49,10 +54,20 @@ fn describe(path: &Path) -> String {
             |format| format!("{format:?}").to_ascii_uppercase()
         )
     ));
-    if let Some(format) = detected.or(extension_format) {
+    if size > limit {
+        info.push(format!(
+            "Details skipped for files larger than {limit} bytes."
+        ));
+        return info.join("\n");
+    }
+    if let Some(format) = detected.or_else(|| image::ImageFormat::from_path(path).ok()) {
         reader.set_format(format);
     }
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_METADATA_ALLOC);
+    reader.limits(limits);
     let Ok(mut decoder) = reader.into_decoder() else {
+        info.push("Image details are unavailable.".into());
         return info.join("\n");
     };
     let (width, height) = decoder.dimensions();
@@ -137,11 +152,15 @@ mod tests {
             .unwrap();
         std::fs::write(&path, &jpeg).unwrap();
         let info = describe(&path);
+        let limited = describe_with_limit(&path, 1);
         std::fs::remove_file(&path).unwrap();
         assert!(info.contains(&std::path::absolute(&path).unwrap().display().to_string()));
         assert!(info.contains(&format!("{} bytes", jpeg.len())));
         assert!(info.contains("Format: JPEG"));
         assert!(info.contains("Dimensions: 9 × 4"));
+        assert!(limited.contains("Format: JPEG"));
+        assert!(limited.contains("Details skipped"));
+        assert!(!limited.contains("Dimensions:"));
     }
 
     #[test]

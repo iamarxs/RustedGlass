@@ -21,6 +21,7 @@ impl PhotoList {
             .drain(..)
             .map(|index| self.files[index].clone())
             .collect();
+        self.rows_changed();
     }
 
     /// Orders the entries by name, reversed when `descending`.
@@ -29,13 +30,59 @@ impl PhotoList {
         let selected = self.file_index(self.index);
         self.order.clear();
         self.index = sort_names(&mut self.files, descending, selected).unwrap_or(0);
+        self.rows_changed();
     }
 
     pub fn remove_matching(&mut self, mut matches: impl FnMut(&Path) -> bool) {
-        for row in (0..self.len()).rev() {
-            if self.path_at(row).is_some_and(|path| matches(path)) {
-                self.remove_at(row);
+        let rows: Vec<usize> = (0..self.len())
+            .filter(|&row| self.path_at(row).is_some_and(|path| matches(path)))
+            .collect();
+        self.remove_rows(&rows);
+    }
+
+    /// Takes the visible rows in `rows` out in one pass; repeated and out-of-range rows are
+    /// ignored. The shown row keeps its picture or falls to the next one, the previous at the
+    /// end, and the remaining rows keep their order. Returns how many rows went.
+    pub fn remove_rows(&mut self, rows: &[usize]) -> usize {
+        let len = self.files.len();
+        let mut drop = vec![false; len];
+        let mut count = 0;
+        for &row in rows {
+            if let Some(index) = self.at(row) {
+                if !drop[index] {
+                    drop[index] = true;
+                    count += 1;
+                }
             }
         }
+        if count == 0 {
+            return 0;
+        }
+        self.reset_random_pass();
+
+        let removed_before = (0..self.index.min(len))
+            .filter_map(|row| self.at(row))
+            .filter(|&index| drop[index])
+            .count();
+        let index = self.index.saturating_sub(removed_before);
+
+        if !self.order.is_empty() {
+            let mut remap = vec![0; len];
+            for (new, old) in (0..len).filter(|&old| !drop[old]).enumerate() {
+                remap[old] = new;
+            }
+            self.order.retain_mut(|old| {
+                if drop[*old] {
+                    return false;
+                }
+                *old = remap[*old];
+                true
+            });
+        }
+        let mut keep = drop.into_iter().map(|remove| !remove);
+        self.files.retain(|_| keep.next() == Some(true));
+        self.index = index.min(self.files.len().saturating_sub(1));
+        self.rows_changed();
+        count
     }
 }

@@ -202,6 +202,15 @@ pub fn open(dialog: &Dialog, config: &Config, parent: HWND, file: Option<&Path>)
             )
         };
         CONTROLS.with(|controls| controls.borrow_mut().push((APPLY_ID, handle)));
+        if *dialog == Dialog::Shortcuts {
+            crate::view::accessibility::annotate_close(handle);
+            keyboard::focus_shortcuts_close(handle, parent);
+        }
+    }
+
+    // A Settings child takes its keys first, so Escape and Tab are routed by that subclass.
+    if *dialog == Dialog::Settings {
+        keyboard::attach_controls();
     }
 }
 

@@ -41,10 +41,12 @@ const SLIDESHOW_TIMER: usize = 1;
 const FRAME_TIMER: usize = 2;
 const NAV_TIMER: usize = 3;
 const NOTICE_TIMER: usize = 4;
+/// Slow fallback if Win32 cannot post a wake-up or dispatches it during a nested state borrow.
+const EVENT_TIMER: usize = 6;
 
 /// Opens the window on the given state and runs its message loop until the window is closed.
 pub fn run(config_path: PathBuf, args: &[String]) -> Result<(), String> {
-    let mut loaded = state::State::new(config_path, args);
+    let mut loaded = state::State::interactive(config_path, args);
     let startup_notice = loaded.notice.take();
     let old_config = loaded.config.incompatible_user_path.clone();
     let starts_fullscreen = loaded.knobs.start_fullscreen;
@@ -53,6 +55,8 @@ pub fn run(config_path: PathBuf, args: &[String]) -> Result<(), String> {
     state::install(loaded);
 
     let hwnd = unsafe { create_window()? };
+    accessibility::start(hwnd);
+    background::attach(hwnd);
     if starts_fullscreen {
         set_fullscreen(hwnd, true);
     }
@@ -101,11 +105,13 @@ pub fn refresh(hwnd: HWND) {
             expire_notice(hwnd);
         }
         w32::invalidate(hwnd);
+        accessibility::announce_status(hwnd);
     }
 }
 
 fn layout_controls(hwnd: HWND) {
     let (width, height) = unsafe { w32::client_size(hwnd) };
+    zoom_overlay::layout(hwnd, (width, height));
     playlist::resize(width as i32, height as i32);
     state::with_state(|state| {
         if state.dialog == Dialog::Shortcuts {
@@ -256,18 +262,22 @@ pub fn expire_notice(hwnd: HWND) {
         arm(hwnd, NOTICE_TIMER, 2800);
     }
     playlist::invalidate();
+    accessibility::announce_status(hwnd);
 }
 
 mod messages;
 use messages::wndproc;
+mod background;
 
 mod settings;
+pub(crate) mod zoom_overlay;
 use settings::{confirm_prompt, pick_folder, press_apply, toggle_setting};
 
 mod frame;
 use frame::frame_style;
 pub use frame::{set_borderless, set_fullscreen};
 
+pub(crate) mod accessibility;
 mod caption;
 mod timers;
 

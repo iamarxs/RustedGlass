@@ -108,11 +108,41 @@ pub unsafe fn paint(hwnd: HWND) {
                 {
                     status(hdc, area, message);
                 }
+                crate::view::zoom_overlay::draw(hdc, area, state);
             }
         });
         back.present(screen, area.0, paint_height as u32);
     });
     let _ = unsafe { EndPaint(hwnd, &paint_struct) };
+}
+
+pub(crate) fn shade(dc: HDC, (x, y, width, height): (i32, i32, i32, i32)) {
+    use windows::Win32::Graphics::Gdi::{GdiAlphaBlend, AC_SRC_OVER, BLENDFUNCTION};
+
+    let Some(pixel) = Buffer::new(dc, (1, 1)) else {
+        return;
+    };
+    unsafe {
+        w32::fill_rect(pixel.dc, 0, 0, 1, 1, BACKGROUND);
+        let _ = GdiAlphaBlend(
+            dc,
+            x,
+            y,
+            width,
+            height,
+            pixel.dc,
+            0,
+            0,
+            1,
+            1,
+            BLENDFUNCTION {
+                BlendOp: AC_SRC_OVER as u8,
+                BlendFlags: 0,
+                SourceConstantAlpha: 210,
+                AlphaFormat: 0,
+            },
+        );
+    }
 }
 
 fn buffer_for_size(buffer: &mut Option<Buffer>, screen: HDC, size: (u32, u32)) -> Option<&Buffer> {

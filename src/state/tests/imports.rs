@@ -191,7 +191,36 @@ fn configured_shuffle_keeps_folder_and_playlist_rows_in_order() {
 }
 
 #[test]
-fn startup_and_sibling_navigation_use_the_folder_settings() {
+fn opening_an_image_limits_the_playlist_to_its_immediate_folder() {
+    let dir = import_test_dir("single-image-scope");
+    let subfolder = dir.join("subfolder");
+    std::fs::create_dir(&subfolder).unwrap();
+    let peer = test_image(&dir, "a-peer.ppm");
+    let selected = test_image(&dir, "b-selected.ppm");
+    let nested = test_image(&subfolder, "c-nested.ppm");
+    let config = dir.join("rgconfig.json");
+    let recurse = "-p:EnableSubfoldersLoading=true".to_string();
+
+    let args = [selected.display().to_string(), recurse.clone()];
+    let mut state = State::new(config.clone(), &args);
+    assert_eq!(state.photos.files, [peer.clone(), selected.clone()]);
+    assert_eq!(state.photos.current(), Some(&selected));
+
+    let all_images = [peer, selected, nested];
+    state.open_files(std::slice::from_ref(&dir));
+    assert_eq!(state.photos.files, all_images);
+    let state = State::new(config, &[dir.display().to_string(), recurse]);
+    assert_eq!(state.photos.files, all_images);
+
+    for path in all_images {
+        std::fs::remove_file(path).unwrap();
+    }
+    std::fs::remove_dir(subfolder).unwrap();
+    std::fs::remove_dir(dir).unwrap();
+}
+
+#[test]
+fn navigation_stays_in_the_opened_folder_with_the_legacy_setting_enabled() {
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN};
 
@@ -216,9 +245,9 @@ fn startup_and_sibling_navigation_use_the_folder_settings() {
         "-p:EnableLoopBackNavigation=false".into(),
     ];
     let mut state = State::new(dir.join("rgconfig.json"), &args);
+    assert!(!state.step(1));
+    assert_eq!(state.photos.current(), Some(&shown));
     assert_eq!(state.photos.files, [shown.clone()]);
-    assert!(state.step(1));
-    assert_eq!(state.photos.current(), Some(&next));
     for file in [shown, hidden, next] {
         std::fs::remove_file(file).unwrap();
     }
@@ -257,6 +286,173 @@ fn dropping_playlist_files_appends_or_replaces_like_other_drops() {
     assert!(state.notice.is_none());
 
     for file in [a, b, c, list1, list2] {
+        std::fs::remove_file(file).unwrap();
+    }
+    std::fs::remove_dir(dir).unwrap();
+}
+
+#[test]
+fn directory_entries_are_refused_by_direct_adds_drops_and_playlists() {
+    let dir = import_test_dir("reject-directories");
+    let fake = dir.join("fake.png");
+    std::fs::create_dir(&fake).unwrap();
+    let good = test_image(&dir, "real.ppm");
+    let playlist = dir.join("list.rgpl");
+    std::fs::write(&playlist, "fake.png\nreal.ppm\n").unwrap();
+
+    let mut state = State::new(dir.join("rgconfig.json"), &[]);
+    assert_eq!(state.add_files(&[fake.clone(), good.clone()]), 1);
+    assert_eq!(state.photos.files, [good.clone()]);
+    assert_eq!(
+        state.notice.as_deref(),
+        Some("Skipped 1 unsupported image(s).")
+    );
+
+    state.notice = None;
+    assert_eq!(state.open_playlist(&playlist), Ok(1));
+    assert_eq!(state.photos.files, [good.clone()]);
+    assert_eq!(
+        state.notice.as_deref(),
+        Some("Skipped 1 unsupported image(s).")
+    );
+
+    // a dropped playlist refuses its directory row the same way
+    state.notice = None;
+    state.photos.files.clear();
+    state.append_drop(vec![playlist.clone()]);
+    assert_eq!(state.photos.files, [good.clone()], "rows keep their order");
+    assert_eq!(
+        state.notice.as_deref(),
+        Some("Skipped 1 unsupported image(s).")
+    );
+
+    std::fs::remove_dir(&fake).unwrap();
+    std::fs::remove_file(&good).unwrap();
+    std::fs::remove_file(&playlist).unwrap();
+    std::fs::remove_dir(&dir).unwrap();
+}
+
+#[test]
+fn bulk_delete_drops_every_occurrence_and_keeps_the_failed_rows() {
+    let dir = import_test_dir("delete-many");
+    let gone = test_image(&dir, "gone.ppm");
+    let missing = dir.join("missing.ppm");
+    let both = test_image(&dir, "both.ppm");
+
+    let mut state = State::new(dir.join("rgconfig.json"), &[]);
+    state.photos.files = vec![gone.clone(), missing.clone(), gone.clone()];
+    state.photos.index = 1;
+    assert!(
+        state.delete_many(&[0, 1, 2]).is_some(),
+        "the missing file is reported"
+    );
+    assert_eq!(
+        state.photos.files,
+        vec![missing.clone()],
+        "a failed path keeps its row; the deleted one loses every occurrence"
+    );
+    assert!(!gone.exists());
+
+    state.photos.files = vec![both.clone(), missing.clone(), both.clone()];
+    state.photos.index = 2;
+    assert_eq!(
+        state.delete_many(&[0, 2, 0]),
+        None,
+        "a repeated row counts once"
+    );
+    assert_eq!(state.photos.files, vec![missing.clone()]);
+    assert_eq!(state.photos.current(), Some(&missing));
+    assert!(!both.exists());
+
+    std::fs::remove_dir(dir).unwrap();
+}
+
+/// Drains the import lane until it has been idle for a moment, so a result that is still
+/// on its thread is never mistaken for parity.
+fn settle(state: &mut State) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut idle = 0;
+    while std::time::Instant::now() < deadline {
+        if state.poll_background() {
+            idle = 0;
+            continue;
+        }
+        idle += 1;
+        if idle >= 20 {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    panic!("the import lane did not settle within 10s");
+}
+
+#[test]
+fn the_import_lane_and_the_direct_methods_prepare_the_same_rows_and_notices() {
+    let dir = import_test_dir("parity");
+    let a = test_image(&dir, "a.ppm");
+    let b = test_image(&dir, "b.ppm");
+    let unsupported = dir.join("notes.txt");
+    std::fs::write(&unsupported, b"text").unwrap();
+    let list = dir.join("rows.rgpl");
+    std::fs::write(
+        &list,
+        format!("missing.ppm\n{}\n{}\n", b.display(), a.display()),
+    )
+    .unwrap();
+    let config = dir.join("rgconfig.json");
+    let both = || {
+        (
+            State::new(config.clone(), &[]),
+            State::interactive(config.clone(), &[]),
+        )
+    };
+
+    // A dropped batch: the playlist's existing rows plus an unsupported file.
+    let (mut direct, mut interactive) = both();
+    let batch = vec![list.clone(), unsupported.clone()];
+    direct.open_files(&batch);
+    interactive.open_files(&batch);
+    settle(&mut interactive);
+    assert_eq!(interactive.photos.files, direct.photos.files);
+    assert_eq!(
+        interactive.photos.files,
+        [a.clone(), b.clone()],
+        "a replacing batch takes Explorer's name order"
+    );
+    assert_eq!(interactive.notice, direct.notice);
+
+    // An append keeps duplicates by occurrence, on either path.
+    let (mut direct, mut interactive) = both();
+    let appends = [b.clone(), a.clone(), b.clone()];
+    assert_eq!(direct.add_files(&appends), 3);
+    assert_eq!(interactive.add_files(&appends), 3);
+    settle(&mut interactive);
+    assert_eq!(interactive.photos.files, direct.photos.files);
+    assert_eq!(
+        direct.photos.files, appends,
+        "duplicates stay as occurrences"
+    );
+    assert_eq!(interactive.notice, direct.notice);
+
+    // An explicit playlist open keeps its order and reports its missing rows.
+    let (mut direct, mut interactive) = both();
+    assert_eq!(direct.open_playlist(&list), Ok(2));
+    assert_eq!(interactive.open_playlist(&list), Ok(0), "queued");
+    settle(&mut interactive);
+    assert_eq!(interactive.photos.files, direct.photos.files);
+    assert_eq!(
+        direct.photos.files,
+        [b.clone(), a.clone()],
+        "playlist order"
+    );
+    assert_eq!(interactive.notice, direct.notice);
+    assert_eq!(
+        interactive.notice.as_deref(),
+        Some("Playlist skipped 1 missing image(s).")
+    );
+    assert_eq!(interactive.message, direct.message);
+
+    for file in [a, b, unsupported, list] {
         std::fs::remove_file(file).unwrap();
     }
     std::fs::remove_dir(dir).unwrap();

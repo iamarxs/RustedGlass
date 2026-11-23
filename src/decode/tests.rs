@@ -393,3 +393,26 @@ fn an_apng_extension_file_opens_as_an_animation() {
     assert!(matches!(open(&path), Ok(Opened::Animated(..))));
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn the_image_budget_counts_every_buffer_with_checked_arithmetic() {
+    assert_eq!(budget::buffer_bytes(1, 1), Some(4));
+    assert_eq!(
+        budget::peak_bytes(100, 50, 100 * 50 * 4),
+        Some(100 * 50 * 16),
+        "decoder output, RGBA copy, BGRA buffer and DIB are all counted"
+    );
+    assert_eq!(
+        budget::peak_bytes(u32::MAX, u32::MAX, 0),
+        None,
+        "an overflowed size is never accepted"
+    );
+
+    // 8192x4096 pixels peaks at exactly the 512 MiB budget; one more row is refused.
+    assert_eq!(budget::MAX_BUDGET % 16, 0);
+    assert!(budget::check(8192, 4096, 8192 * 4096).is_ok());
+    let error = budget::check(8192, 4097, 8192 * 4097).unwrap_err();
+    assert!(error.contains("512 MiB"), "{error}");
+    assert!(budget::check(MAX_DIMENSION, MAX_DIMENSION, 0).is_err());
+    assert!(budget::check(8192, 4096, 8192 * 4096 * 16).is_err());
+}

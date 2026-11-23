@@ -21,7 +21,6 @@ use crate::state;
 use crate::tools::{self, Action};
 use crate::view;
 use crate::w32;
-use crate::zoom::{self, ZoomMode};
 
 /// Show the image at this place in the list. A row of the playlist and `Home` / `End` all ask
 /// for the same thing, so they share this.
@@ -34,12 +33,25 @@ pub fn jump_to(hwnd: HWND, position: usize) {
     view::refresh_navigation(hwnd);
 }
 
+/// Whether a panel is open over the picture: viewer keys, wheel and gestures must not act
+/// behind it.
+pub fn panel_open() -> bool {
+    state::with_state(|state| state.dialog != Dialog::None).unwrap_or(false)
+}
+
+/// A failed file command becomes the timed notice (`State.notice`): the viewer and the playlist
+/// view both paint it, and the standard notice timer clears it.
+fn fail_to_notice(hwnd: HWND, failure: Option<String>) {
+    if let Some(message) = failure {
+        state::with_state(|state| state.notice = Some(message));
+        view::expire_notice(hwnd);
+    }
+    view::refresh(hwnd);
+}
+
 pub fn apply_action(hwnd: HWND, action: Action) {
     if settle_file_selection(hwnd, action) {
         return;
-    }
-    if action != Action::StopSlideshowAndArmQuit {
-        state::with_state(|state| state.slideshow_stopped_by_escape = false);
     }
     let screen = unsafe { w32::client_size(hwnd) };
 
@@ -99,44 +111,16 @@ pub fn apply_action(hwnd: HWND, action: Action) {
             state::with_state(|state| state.rotate_frames(90));
             view::refresh(hwnd);
         }
-        Action::ZoomMode(index) => {
-            state::with_state(|state| {
-                if let Some(mode) = zoom::MODES.get(index) {
-                    state.select_zoom_mode(*mode, screen);
-                }
-            });
-            view::refresh(hwnd);
+        Action::ZoomMode(_) | Action::FitOriginal | Action::ZoomIn | Action::ZoomOut => {
+            view::zoom_overlay::change(hwnd, screen, action);
         }
-        Action::FitOriginal => {
-            state::with_state(|state| {
-                state.select_zoom_mode(ZoomMode::ScaleToFit, screen);
-                state.clear_manual_zoom();
-            });
-            view::refresh(hwnd);
-        }
-        Action::ZoomIn | Action::ZoomOut => {
-            state::with_state(|state| {
-                let step = zoom::zoom_step(state.knobs.zoom_speed, 120);
-                state.zoom_by(
-                    screen,
-                    if action == Action::ZoomIn {
-                        step
-                    } else {
-                        1.0 / step
-                    },
-                );
-            });
-            view::refresh(hwnd);
-        }
-        Action::StartSlideshow | Action::StopSlideshow | Action::StopSlideshowAndArmQuit => {
+        Action::ExactZoom => view::zoom_overlay::open(hwnd),
+        Action::StartSlideshow | Action::StopSlideshow => {
             state::with_state(|state| {
                 if action == Action::StartSlideshow {
                     state.start_slideshow();
                 } else {
                     state.stop_slideshow();
-                    if action == Action::StopSlideshowAndArmQuit {
-                        state.slideshow_stopped_by_escape = true;
-                    }
                 }
             });
             view::expire_notice(hwnd);
@@ -206,26 +190,24 @@ pub fn apply_action(hwnd: HWND, action: Action) {
             view::refresh(hwnd);
         }
         Action::DeleteFile => {
-            state::with_state(|state| state.message = state.delete_current().err());
-            view::refresh(hwnd);
+            let failure = state::with_state(|state| state.delete_current().err()).flatten();
+            fail_to_notice(hwnd, failure);
         }
         Action::MoveToTarget => {
-            state::with_state(|state| {
-                if let Err(error) = state.move_current_to_target() {
-                    state.message = Some(error);
-                }
-            });
-            view::refresh(hwnd);
+            let failure = state::with_state(|state| state.move_current_to_target().err()).flatten();
+            fail_to_notice(hwnd, failure);
         }
         Action::Rename => ask_rename(hwnd),
         Action::SaveAs => save_as(hwnd),
         Action::ShowInExplorer => {
-            state::with_state(|state| {
-                if let Some(path) = state.photos.current() {
-                    state.message = crate::fileops::show_in_explorer(path).err();
-                }
-            });
-            view::refresh(hwnd);
+            let failure = state::with_state(|state| {
+                state
+                    .photos
+                    .current()
+                    .and_then(|path| crate::fileops::show_in_explorer(path).err())
+            })
+            .flatten();
+            fail_to_notice(hwnd, failure);
         }
         Action::OpenPlaylist => {
             let path = dialog::pick_one_file(hwnd, "Open playlist", "Playlists (.rgpl)", "*.rgpl");
@@ -247,12 +229,8 @@ pub fn apply_action(hwnd: HWND, action: Action) {
                 "playlist",
             );
             if let Some(path) = path {
-                state::with_state(|state| {
-                    if let Err(message) = state.save_playlist(&path) {
-                        state.message = Some(message);
-                    }
-                });
-                view::refresh(hwnd);
+                let failure = state::with_state(|state| state.save_playlist(&path).err()).flatten();
+                fail_to_notice(hwnd, failure);
             }
         }
         Action::RemoveSelected => {
@@ -262,18 +240,20 @@ pub fn apply_action(hwnd: HWND, action: Action) {
         }
         Action::DeleteSelected => {
             let rows = targets();
-            state::with_state(|state| state.message = state.delete_many(&rows));
-            view::refresh(hwnd);
+            let failure = state::with_state(|state| state.delete_many(&rows)).flatten();
+            fail_to_notice(hwnd, failure);
         }
         Action::ShowFolder => {
             let rows = targets();
-            state::with_state(|state| {
+            let failure = state::with_state(|state| {
                 let row = rows.first().copied().unwrap_or(state.photos.index);
-                if let Some(path) = state.photos.path_at(row) {
-                    state.message = crate::fileops::show_in_explorer(path).err();
-                }
-            });
-            view::refresh(hwnd);
+                state
+                    .photos
+                    .path_at(row)
+                    .and_then(|path| crate::fileops::show_in_explorer(path).err())
+            })
+            .flatten();
+            fail_to_notice(hwnd, failure);
         }
         Action::SortByName(descending) => {
             state::with_state(|state| state.sort_by_name(descending));
@@ -281,7 +261,11 @@ pub fn apply_action(hwnd: HWND, action: Action) {
         }
         Action::CopyImage => panels::copy_image(hwnd),
         Action::About => crate::about::show(hwnd),
-        Action::ImageInfo => crate::metadata::show(hwnd),
+        Action::ImageInfo => {
+            if state::with_state(|state| state.request_image_info()) == Some(true) {
+                panels::refresh_import(hwnd);
+            }
+        }
         Action::Quit => {
             let _ = unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) };
         }

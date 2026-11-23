@@ -38,6 +38,13 @@ fn viewer_menu(state: &State) -> Option<ContextMenu> {
     menu.add(zoom_menu, ZoomOut, "Zoom out\t−", zoomable, false);
     menu.add(
         zoom_menu,
+        ExactZoom,
+        "Enter exact zoom…\tZ",
+        zoomable,
+        false,
+    );
+    menu.add(
+        zoom_menu,
         FitOriginal,
         "Fit image to window\t0",
         zoomable,

@@ -9,7 +9,7 @@ pub(super) unsafe extern "system" fn wndproc(
     unsafe {
         match message {
             WM_CREATE => {
-                let _ = DragAcceptFiles(hwnd, true);
+                DragAcceptFiles(hwnd, true);
                 LRESULT(0)
             }
             WM_PAINT => {
@@ -74,6 +74,11 @@ pub(super) unsafe extern "system" fn wndproc(
                 LRESULT(0)
             }
             WM_KEYDOWN => {
+                if wparam.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
+                    && zoom_overlay::cancel(hwnd)
+                {
+                    return LRESULT(0);
+                }
                 let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
                 if let Some(action) =
                     input::on_key(wparam.0 as u32, ctrl, input::shift_held(lparam))
@@ -88,12 +93,15 @@ pub(super) unsafe extern "system" fn wndproc(
                     let _ = windows::Win32::Graphics::Gdi::UpdateWindow(hwnd);
                     dialog::scroll_by(w32::wheel_delta(wparam));
                     refresh(hwnd);
-                } else {
+                } else if !input::panel_open() {
                     input::on_wheel(hwnd, wparam);
                 }
                 LRESULT(0)
             }
             WM_LBUTTONDOWN => {
+                if zoom_overlay::click(hwnd, lparam) {
+                    return LRESULT(0);
+                }
                 if state::with_state(|state| state.dialog == Dialog::Settings) == Some(true) {
                     if let Some(id) = dialog::click_checkbox_label(
                         hwnd,
@@ -108,7 +116,7 @@ pub(super) unsafe extern "system" fn wndproc(
                 LRESULT(0)
             }
             WM_MOUSEMOVE => {
-                if wparam.0 & 1 != 0 {
+                if wparam.0 & 1 != 0 && !input::panel_open() {
                     input::on_drag(hwnd, lparam);
                 }
                 LRESULT(0)
@@ -119,13 +127,15 @@ pub(super) unsafe extern "system" fn wndproc(
                 LRESULT(0)
             }
             WM_RBUTTONUP => {
-                input::show_menu(hwnd);
+                if !input::panel_open() {
+                    input::show_menu(hwnd);
+                }
                 LRESULT(0)
             }
             WM_DROPFILES => {
                 let drop = HDROP(wparam.0 as *mut std::ffi::c_void);
                 input::on_drop(hwnd, drop);
-                let _ = DragFinish(drop);
+                DragFinish(drop);
                 LRESULT(0)
             }
             windows::Win32::UI::WindowsAndMessaging::WM_NCCALCSIZE
@@ -165,7 +175,11 @@ pub(super) unsafe extern "system" fn wndproc(
             WM_COMMAND => {
                 use windows::Win32::UI::WindowsAndMessaging::EN_KILLFOCUS;
                 let id = w32::command_id(wparam);
-                if id == PROMPT_ID {
+                if id == zoom_overlay::EDIT_ID {
+                    if lparam.0 == 0 {
+                        zoom_overlay::apply(hwnd);
+                    }
+                } else if id == PROMPT_ID {
                     if lparam.0 == 0 {
                         if let Some(value) = dialog::prompt_text() {
                             confirm_prompt(hwnd, &value);
@@ -176,9 +190,13 @@ pub(super) unsafe extern "system" fn wndproc(
                 } else if dialog::is_pick(id) {
                     pick_folder(hwnd, id - dialog::PICK_BASE);
                 } else if let Some(action) = bar::action(id) {
-                    // Return focus to the viewer so its shortcuts keep working.
-                    input::apply_action(hwnd, action);
-                    let _ = SetFocus(Some(hwnd));
+                    if !input::panel_open() {
+                        input::apply_action(hwnd, action);
+                        // Let a newly opened panel keep the focus it set.
+                        if !input::panel_open() {
+                            let _ = SetFocus(Some(hwnd));
+                        }
+                    }
                 } else if state::with_state(|state| state.dialog == Dialog::Settings) == Some(true)
                 {
                     if (wparam.0 >> 16) as u32 == EN_KILLFOCUS {
@@ -188,8 +206,13 @@ pub(super) unsafe extern "system" fn wndproc(
                 }
                 LRESULT(0)
             }
+            state::BACKGROUND_READY => background::drain(hwnd),
             WM_TIMER => {
                 match wparam.0 {
+                    zoom_overlay::TIMER => {
+                        zoom_overlay::expire(hwnd);
+                        return LRESULT(1);
+                    }
                     SLIDESHOW_TIMER => {
                         if !timers::slide_due(hwnd) {
                             return LRESULT(1);
@@ -209,9 +232,11 @@ pub(super) unsafe extern "system" fn wndproc(
                         }
                         state::with_state(|state| state.finish_navigation());
                     }
+                    EVENT_TIMER => return background::drain(hwnd),
                     NOTICE_TIMER => {
                         arm(hwnd, NOTICE_TIMER, 0);
                         state::with_state(|state| state.notice = None);
+                        accessibility::announce_status(hwnd);
                         playlist::invalidate();
                         w32::invalidate(hwnd);
                         return LRESULT(1);
@@ -238,11 +263,14 @@ pub(super) unsafe extern "system" fn wndproc(
                 LRESULT(1)
             }
             WM_DESTROY => {
+                accessibility::clear(hwnd);
+                zoom_overlay::clear(hwnd);
                 caption::clear();
                 paint::clear_buffer();
                 timers::clear(hwnd);
                 // Settings the user changed while the window was open survive the next start.
                 state::with_state(|state| {
+                    state.worker.take();
                     if !(state.start_maximized && IsZoomed(hwnd).as_bool()) {
                         state
                             .config

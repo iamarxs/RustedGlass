@@ -1,18 +1,18 @@
 use super::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
-pub(super) unsafe extern "system" fn prompt_key(
+pub(crate) unsafe extern "system" fn prompt_key(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
-    _id: usize,
+    id: usize,
     parent: usize,
 ) -> LRESULT {
     if msg == WM_KEYDOWN && wparam.0 == VK_RETURN.0 as usize {
         let _ = PostMessageW(
             Some(HWND(parent as *mut core::ffi::c_void)),
             WM_COMMAND,
-            WPARAM(PROMPT_ID),
+            WPARAM(id),
             LPARAM(0),
         );
         return LRESULT(0);
@@ -30,7 +30,7 @@ pub(super) unsafe extern "system" fn prompt_key(
 }
 
 /// `ES_AUTOHSCROLL` lets a long path scroll inside the field instead of wrapping.
-pub(super) fn create(
+pub(crate) fn create(
     class: *const u16,
     text: *const u16,
     style: WINDOW_STYLE,

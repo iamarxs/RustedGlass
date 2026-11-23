@@ -19,7 +19,11 @@ impl State {
             from.to_string()
         };
         self.notice = Some(format!("Slideshow started, {interval} s per image"));
-        if self.knobs.play_gif_once && !self.navigation_pending && self.animation.is_some() {
+        if self.knobs.play_gif_once
+            && !self.navigation_pending
+            && !self.frame_pending
+            && self.is_animated()
+        {
             self.animation_played_once = false;
             self.rewind_animation();
         }
@@ -70,8 +74,9 @@ impl State {
     pub fn advance_slideshow_if_ready(&mut self) -> bool {
         if !self.slideshow_running
             || self.navigation_pending
+            || self.load_pending
             || !self.slideshow_elapsed
-            || (self.knobs.play_gif_once && self.animation.is_some() && !self.animation_played_once)
+            || (self.knobs.play_gif_once && self.is_animated() && !self.animation_played_once)
         {
             return false;
         }
@@ -118,12 +123,7 @@ impl State {
                 return false;
             }
             self.photos.index = 0;
-        } else if !self.photos.step(
-            delta,
-            self.knobs.loop_back,
-            self.knobs.auto_sibling_dir,
-            (self.knobs.include_hidden, self.knobs.recurse),
-        ) {
+        } else if !self.photos.step(delta, self.knobs.loop_back) {
             return false;
         }
         true

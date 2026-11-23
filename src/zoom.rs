@@ -91,12 +91,21 @@ pub fn factor(mode: ZoomMode, bitmap: (u32, u32), area: (u32, u32), locked: f64)
     }
 }
 
-/// How much one wheel notch or one zoom key press multiplies the zoom by, from the `ZoomSpeed`
-/// setting (`0` = auto): the smaller that setting, the smaller each step.
-pub fn zoom_step(zoom_speed: f64, delta: i32) -> f64 {
-    let speed = zoom_speed.clamp(-499.0, 499.0);
-    let step = (delta.abs() as f64 / (500.0 - speed + 1.0)).clamp(0.01, 1.0);
-    1.0 + step
+pub const STEP_PERCENT_KEY: &str = "ZoomStepPercent";
+pub const DEFAULT_STEP_PERCENT: f64 = 12.0;
+
+pub fn legacy_step_percent(speed: f64) -> f64 {
+    if speed == 0.0 {
+        return DEFAULT_STEP_PERCENT;
+    }
+    let percent = (12_000.0 / (501.0 - speed.clamp(-499.0, 499.0))).min(100.0);
+    (percent * 100.0).round() / 100.0
+}
+
+/// Multiplier for a zoom keypress or one or more wheel notches (120 units per notch).
+pub fn zoom_step(percent: f64, delta: i32) -> f64 {
+    let notches = delta.unsigned_abs() as f64 / 120.0;
+    1.0 + (percent / 100.0 * notches).min(1.0)
 }
 
 #[cfg(test)]
@@ -129,17 +138,14 @@ mod tests {
     }
 
     #[test]
-    fn a_bigger_zoom_speed_zooms_more_at_once() {
-        assert!(zoom_step(0.0, 120) < zoom_step(400.0, 120));
-        assert_eq!(
-            zoom_step(0.0, -120),
-            zoom_step(0.0, 120),
-            "only the size of the step matters"
-        );
-        assert!(zoom_step(0.0, 0) > 1.0, "a step is never zero");
-        assert!(zoom_step(-400.0, 120) < zoom_step(0.0, 120));
-        assert_eq!(zoom_step(-500.0, 120), zoom_step(-499.0, 120));
-        assert_eq!(zoom_step(500.0, 120), zoom_step(499.0, 120));
+    fn the_zoom_step_is_a_percentage_per_notch() {
+        assert_eq!(zoom_step(0.1, 120), 1.001);
+        assert_eq!(zoom_step(0.1, 60), 1.0005);
+        assert_eq!(zoom_step(5.0, 120), 1.05);
+        assert_eq!(zoom_step(5.0, -240), 1.1);
+        assert_eq!(zoom_step(100.0, 240), 2.0);
+        assert_eq!(legacy_step_percent(-499.0), 12.0);
+        assert_eq!(legacy_step_percent(499.0), 100.0);
     }
 
     #[test]

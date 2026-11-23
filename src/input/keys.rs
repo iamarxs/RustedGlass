@@ -20,6 +20,7 @@ pub const SHORTCUT_GROUPS: &[(&str, &[Shortcut])] = &[
         &[
             ("+ / −", "Zoom in / out"),
             ("Ctrl + Wheel", "Zoom in / out"),
+            ("Z", "Enter exact zoom"),
             ("0 / 5", "Fit image to window"),
             ("1 / 2", "Auto zoom / lock zoom ratio"),
             ("3 / 4", "Scale to width / height"),
@@ -82,8 +83,7 @@ pub const SHORTCUT_GROUPS: &[(&str, &[Shortcut])] = &[
     ),
 ];
 
-/// Whether Ctrl is down. `MK_CONTROL` has no constant in this windows-rs version, and Ctrl+wheel
-/// would not report it either.
+/// Whether Ctrl is down. Ctrl+wheel would not report `MK_CONTROL` either.
 pub(super) unsafe fn ctrl_down() -> bool {
     GetKeyState(VK_CONTROL.0 as i32) < 0
 }
@@ -102,18 +102,22 @@ fn letter(vk: u32) -> Option<char> {
 
 /// What a key press asks for. `None` means the viewer has no action for it.
 pub fn on_key(vk: u32, ctrl: bool, shift: bool) -> Option<Action> {
-    // The virtual keys are constants of `VIRTUAL_KEY`, so the match runs on that type.
+    // A panel keeps Esc (close), F1 (toggle) and F10 (frame); the rest must not act behind it.
+    let keep = matches!(VIRTUAL_KEY(vk as u16), VK_ESCAPE | VK_F1 | VK_F10);
+    if super::panel_open() && !keep {
+        return None;
+    }
     let key = VIRTUAL_KEY(vk as u16);
     let action = match key {
         VK_LEFT | VK_UP => Action::Previous,
         VK_RIGHT | VK_DOWN => Action::Next,
-        VK_SPACE => {
-            if state::with_state(|s| s.slideshow_running || s.slideshow_paused).unwrap_or(false) {
-                Action::ToggleSlideshowPause
-            } else {
-                Action::Next
-            }
+        VK_SPACE
+            if state::with_state(|s| s.slideshow_running || s.slideshow_paused)
+                .unwrap_or(false) =>
+        {
+            Action::ToggleSlideshowPause
         }
+        VK_SPACE => Action::Next,
         VK_HOME => Action::First,
         VK_END => Action::Last,
         VK_ESCAPE => return Some(escape()),
@@ -132,25 +136,28 @@ pub fn on_key(vk: u32, ctrl: bool, shift: bool) -> Option<Action> {
         VK_DELETE if ctrl => Action::DeleteFile,
         VK_DELETE => Action::RemoveItem,
         _ => match letter(vk)? {
-            '0' => Action::FitOriginal,
-            '+' | '=' => Action::ZoomIn,
-            '-' | '_' => Action::ZoomOut,
-            digit @ '1'..='6' => Action::ZoomMode(digit.to_digit(10)? as usize - 1),
-            'r' => Action::Rotate,
-            't' => Action::ToggleToolBar,
+            // Bare bindings require !ctrl: a Ctrl-combo must never dispatch a plain-letter
+            // action, so Ctrl+C (copy) and Ctrl+M stay unbound here.
+            '0' if !ctrl => Action::FitOriginal,
+            '+' | '=' if !ctrl => Action::ZoomIn,
+            '-' | '_' if !ctrl => Action::ZoomOut,
+            'z' if !ctrl => Action::ExactZoom,
+            digit @ '1'..='6' if !ctrl => Action::ZoomMode(digit.to_digit(10)? as usize - 1),
+            'r' if !ctrl => Action::Rotate,
+            't' if !ctrl => Action::ToggleToolBar,
             'l' if !ctrl => Action::ShowPlaylist,
-            's' if !ctrl => Action::Settings,
             'p' if ctrl => Action::Settings,
-            'f' => Action::OpenFolder,
+            'f' if !ctrl => Action::OpenFolder,
             'o' if ctrl => Action::OpenPlaylist,
             's' if ctrl => Action::SavePlaylist,
-            'o' => Action::OpenFile,
+            's' if !ctrl => Action::Settings,
+            'o' if !ctrl => Action::OpenFile,
             'a' if shift => Action::AddFolder,
             'a' if ctrl => Action::RandomOrder,
             'a' => Action::AddFiles,
-            'm' => Action::MoveToTarget,
-            'c' => Action::SaveAs,
-            'e' => Action::ShowInExplorer,
+            'm' if !ctrl => Action::MoveToTarget,
+            'c' if !ctrl => Action::SaveAs,
+            'e' if !ctrl => Action::ShowInExplorer,
             'i' if !ctrl => Action::ImageInfo,
             'q' if ctrl => Action::Quit,
             _ => return None,
@@ -159,18 +166,14 @@ pub fn on_key(vk: u32, ctrl: bool, shift: bool) -> Option<Action> {
     Some(action)
 }
 
-/// `Esc`: close the panel or playlist, stop a running slideshow (the next press quits),
-/// otherwise quit immediately — even with an image open.
+/// `Esc`: close the panel or playlist, stop a running slideshow, otherwise quit immediately.
 fn escape() -> Action {
     if state::with_state(|state| state.dialog != Dialog::None).unwrap_or(false) {
         Action::ClosePanel
     } else if state::with_state(|s| s.playlist_visible) == Some(true) {
         Action::ShowPlaylist
     } else if state::with_state(|s| s.slideshow_running || s.slideshow_paused) == Some(true) {
-        Action::StopSlideshowAndArmQuit
-    } else if state::with_state(|state| state.slideshow_stopped_by_escape) == Some(true) {
-        state::with_state(|state| state.slideshow_stopped_by_escape = false);
-        Action::Quit
+        Action::StopSlideshow
     } else {
         Action::Quit
     }
@@ -186,8 +189,7 @@ fn slideshow_toggle() -> Action {
     }
 }
 
-/// Whether Shift was down. Asked of the keyboard state rather than the message, because the
-/// message's own shift bit only says "was already held".
+/// Whether Shift was down, asked of the live keyboard state.
 pub fn shift_held(_lparam: LPARAM) -> bool {
     unsafe { GetKeyState(VK_SHIFT.0 as i32) < 0 }
 }
@@ -195,6 +197,21 @@ pub fn shift_held(_lparam: LPARAM) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panel_blocks_viewer_keys_but_not_esc_f1_and_f10() {
+        let mut state = crate::state::State::new(crate::test_path("unused-config.json"), &[]);
+        state.dialog = Dialog::Settings;
+        state::install(state);
+        for vk in [VK_RIGHT.0 as u32, VK_DELETE.0 as u32, b'S' as u32] {
+            assert_eq!(on_key(vk, false, false), None);
+        }
+        assert_eq!(on_key(VK_ESCAPE.0 as u32, false, false), Some(escape()));
+        assert!(on_key(VK_F1.0 as u32, false, false).is_some());
+        assert!(on_key(VK_F10.0 as u32, false, false).is_some());
+        state::with_state(|state| state.dialog = Dialog::None);
+        assert_eq!(on_key(VK_RIGHT.0 as u32, false, false), Some(Action::Next));
+    }
 
     #[test]
     fn playlist_shortcuts_are_distinct_from_image_open_and_settings() {
@@ -223,11 +240,9 @@ mod tests {
         state.photos.files.push("image.png".into());
         state.start_slideshow();
         state::install(state);
-        assert_eq!(escape(), Action::StopSlideshowAndArmQuit);
-        state::with_state(|state| {
-            state.stop_slideshow();
-            state.slideshow_stopped_by_escape = true;
-        });
+        assert_eq!(escape(), Action::StopSlideshow);
+        // The handler stops the slideshow, as `apply_action` does.
+        state::with_state(|state| state.stop_slideshow());
         assert_eq!(escape(), Action::Quit);
     }
 
@@ -240,6 +255,26 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_suppresses_unmapped_plain_letters() {
+        // Ctrl+C and Ctrl+M are unbound: C stays Save as, M stays Quick move.
+        assert_eq!(on_key(b'C' as u32, true, false), None);
+        assert_eq!(on_key(b'M' as u32, true, false), None);
+        assert_eq!(on_key(b'C' as u32, false, false), Some(Action::SaveAs));
+        assert_eq!(
+            on_key(b'M' as u32, false, false),
+            Some(Action::MoveToTarget)
+        );
+        for vk in *b"ZRTLFEI03" {
+            assert!(on_key(vk as u32, true, false).is_none());
+        }
+        // The explicit Ctrl/Shift mappings still dispatch.
+        assert_eq!(on_key(b'A' as u32, true, false), Some(Action::RandomOrder));
+        assert_eq!(on_key(b'A' as u32, false, true), Some(Action::AddFolder));
+        assert_eq!(on_key(b'P' as u32, true, false), Some(Action::Settings));
+        assert_eq!(on_key(b'Q' as u32, true, false), Some(Action::Quit));
+    }
+
+    #[test]
     fn every_shortcut_is_listed_once() {
         let table: Vec<_> = SHORTCUT_GROUPS
             .iter()
@@ -247,9 +282,9 @@ mod tests {
             .collect();
         assert!(table.len() > 20, "the list should cover the viewer");
         let mut keys: Vec<&str> = table.iter().map(|(key, _)| *key).collect();
-        for (key, what) in &table {
-            assert!(!key.is_empty() && !what.is_empty());
-        }
+        table
+            .iter()
+            .for_each(|(k, w)| assert!(!k.is_empty() && !w.is_empty()));
         keys.sort_unstable();
         let all = keys.len();
         keys.dedup();

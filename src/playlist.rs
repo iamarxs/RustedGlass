@@ -36,6 +36,8 @@ thread_local! {
     // ListView can request labels synchronously while the viewer state is borrowed.
     static ROWS: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
     static CURRENT: Cell<Option<usize>> = const { Cell::new(None) };
+    // The row token `ROWS` was copied from, so an unchanged playlist needs no comparison.
+    static SYNCED: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
 fn list() -> HWND {
@@ -223,6 +225,7 @@ pub fn sync(photos: &PhotoList) {
         }
         append
     });
+    SYNCED.set(Some(photos.rows_token()));
     unsafe {
         if !append {
             CURRENT.set(None);
@@ -240,7 +243,7 @@ pub fn refresh(photos: &PhotoList) {
     if list == NO_LIST {
         return;
     }
-    if ROWS.with(|stored| stored.borrow().iter().ne(photos.visible_rows())) {
+    if SYNCED.get() != Some(photos.rows_token()) {
         sync(photos);
     } else {
         mark(photos.current().map(|_| photos.index));

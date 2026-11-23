@@ -54,7 +54,7 @@ pub(super) const ROWS: &[Row] = &[
     Row {
         key: "EnableFreePan",
         label: "Pan image by dragging",
-        tooltip: "Click and drag with the pointer to pan around the image",
+        tooltip: "Click and drag to pan the image up to the edges of the canvas",
         kind: Kind::CheckBox,
         default: "false",
     },
@@ -69,13 +69,6 @@ pub(super) const ROWS: &[Row] = &[
         key: "EnableSubfoldersLoading",
         label: "Include subfolders",
         tooltip: "Also load images from subfolders of the opened folder",
-        kind: Kind::CheckBox,
-        default: "false",
-    },
-    Row {
-        key: "EnableAutoSwitchSiblingDir",
-        label: "Browse sibling folders",
-        tooltip: "When sequential browsing reaches either end of the list, load images from a neighboring folder. Turn off Loop image navigation to use this setting",
         kind: Kind::CheckBox,
         default: "false",
     },
@@ -129,11 +122,11 @@ pub(super) const ROWS: &[Row] = &[
         default: "5",
     },
     Row {
-        key: "ZoomSpeed",
-        label: "Zoom step (0 = normal)",
-        tooltip: "0 is the standard zoom step. Higher values zoom more, and negative values zoom less. Values are limited to −499 through 499",
+        key: crate::zoom::STEP_PERCENT_KEY,
+        label: "Zoom step (%)",
+        tooltip: "Percentage per zoom key press or Ctrl + wheel notch. Enter 0.1 through 100. The default is 12",
         kind: Kind::TextField,
-        default: "0",
+        default: "12",
     },
     Row {
         key: "PanSpeed",

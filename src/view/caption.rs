@@ -9,7 +9,7 @@ thread_local! {
 pub(super) fn update(hwnd: HWND) {
     let area = unsafe { w32::client_size(hwnd) };
     let title = state::with_state(|state| {
-        if state.navigation_pending {
+        if state.navigation_pending || state.load_pending {
             return None;
         }
         let Some(path) = state.photos.current() else {

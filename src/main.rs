@@ -38,28 +38,44 @@ const HELP: &str = "\
 RustedGlass — a fast Windows image viewer
 
 Usage:
-  RustedGlass [PATH] [options]
+  RustedGlass.exe [PATH] [options]
 
 Arguments:
   PATH                  Image, folder or .rgpl playlist to open
                         Use -- before a path that starts with a dash
 
 Options:
-  --config <path>       Read and save settings in this file
+  --config <path>        Read and save settings in this file
                         Also accepted: --config=<path>
   -f, --fullscreen      Start full screen
   -h, --help            Show this help
   -m, --maximized       Start maximized
   -p:Key=value          Set a config value for this run
+                        Repeat -p: for each setting
   -t, --topmost         Keep the window above the others
   -V, --version         Print the version and exit
 
-Keys:
+Examples (from the folder containing RustedGlass.exe):
+  ./RustedGlass.exe \"E:/My Pictures\" -p:ZoomStepPercent=0.5
+    Open a folder and zoom in half-percent steps.
+  ./RustedGlass.exe \"Weekend.rgpl\" --fullscreen -p:EnableSlideshow=true
+    Open a playlist and start the slideshow in full screen.
+
+Common viewer shortcuts:
+  O / F                 Open images / open a folder
+  Arrow keys / Wheel    Browse images
+  Home / End            Go to the first / last image
+  Ctrl + A              Toggle random image order
+  + / − / Ctrl + Wheel  Zoom in or out
+  Z                     Enter an exact zoom percentage
+  0                     Fit image to window
+  Ctrl + O / Ctrl + S    Open / save a playlist
   Esc                   Close the panel or playlist. Stop an active slideshow.
                         Quit if neither applies.
   F1                    Show or hide keyboard shortcuts
   F10                   Show or hide window frame
   F11                   Start or stop slideshow
+  Space                 Pause or resume slideshow, or advance when stopped
   F12                   Toggle full screen
   L                     Show or hide playlist
   S / Ctrl + P          Open Settings
@@ -199,10 +215,11 @@ fn attach_parent_console() {
     }
 }
 
-/// Settings live next to the executable, so they follow this build instead of the opened folder.
+/// Resolve executable symlinks so settings stay beside the executable they point to.
 fn app_dir() -> std::path::PathBuf {
     std::env::current_exe()
         .ok()
+        .map(|path| path.canonicalize().unwrap_or(path))
         .and_then(|path| path.parent().map(|dir| dir.to_path_buf()))
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }

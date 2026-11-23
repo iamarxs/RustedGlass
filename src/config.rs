@@ -2,12 +2,17 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::zoom;
+
 pub const CONFIG_USER: &str = "rgconfig.json";
 pub const CONFIG_CMD_PREFIX: &str = "-p:";
+/// Settings files above this many bytes are refused instead of parsed.
+pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 pub const ALWAYS_MAXIMIZED: &str = "EnableMainWindowMaximized";
 pub const FILES_MAXIMIZED: &str = "OpenImagesMaximized";
 pub const SPEC_VERSION: f32 = 1.0;
@@ -85,6 +90,11 @@ impl Config {
         self.get(key).and_then(Value::as_f64).unwrap_or(default)
     }
 
+    pub fn zoom_step_percent(&self) -> f64 {
+        self.get_f64(zoom::STEP_PERCENT_KEY, zoom::DEFAULT_STEP_PERCENT)
+            .clamp(0.1, 100.0)
+    }
+
     pub fn window_bounds(&self) -> Option<(i32, i32, i32, i32)> {
         serde_json::from_value(self.get("WindowBounds")?.clone()).ok()
     }
@@ -104,7 +114,7 @@ impl Config {
 
     /// Writes the changed keys into the selected config, leaving every other value of that
     /// file as it is — only what the user touched is saved.
-    pub fn save_user(&self) -> Result<(), String> {
+    pub fn save_user(&mut self) -> Result<(), String> {
         if !self.has_changes() {
             return Ok(());
         }
@@ -137,8 +147,13 @@ impl Config {
 
         let text = serde_json::to_string_pretty(&Value::Object(object))
             .map_err(|e| format!("cannot build {}: {e}", path.display()))?;
+        if text.len() as u64 > MAX_CONFIG_BYTES {
+            return Err(format!("{}: settings exceed 1 MiB", path.display()));
+        }
 
-        crate::atomic_file::write(path, text.as_bytes())
+        crate::atomic_file::write(path, text.as_bytes())?;
+        self.dirty.clear();
+        Ok(())
     }
 
     /// Parses `-p:Key=value` arguments, retaining JSON value types.
@@ -189,11 +204,18 @@ fn read_file(path: &Path) -> Option<Value> {
 
 pub fn read_user_file(path: &Path) -> Result<Option<Value>, String> {
     let describe = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(describe(&error)),
     };
+    // one byte past the cap, so an oversized file is rejected, never silently truncated
+    let mut limited = file
+        .take(MAX_CONFIG_BYTES + 1);
+    let text = std::io::read_to_string(&mut limited).map_err(|error| describe(&error))?;
+    if text.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(describe(&"is larger than the settings cap"));
+    }
     let value: Value = serde_json::from_str(&text).map_err(|error| describe(&error))?;
     if !value.is_object() {
         return Err(describe(&"expected a JSON object"));
@@ -221,6 +243,10 @@ fn index(layer: &Value) -> HashMap<String, Value> {
             map.entry(key.to_lowercase())
                 .or_insert_with(|| value.clone());
         }
+    }
+    if let Some(speed) = map.get("zoomspeed").and_then(Value::as_f64) {
+        map.entry(zoom::STEP_PERCENT_KEY.to_lowercase())
+            .or_insert_with(|| Value::from(zoom::legacy_step_percent(speed)));
     }
 
     map

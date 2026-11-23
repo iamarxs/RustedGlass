@@ -66,6 +66,9 @@ pub fn delete(path: &Path) -> Result<(), String> {
 /// Renames the file inside its own folder, and returns the new path. A name without an
 /// extension keeps the file's current one, so a rename cannot stop it being a picture.
 pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
+    if !path.is_file() {
+        return Err(format!("{path:?} is not a file"));
+    }
     let trimmed = new_name.trim();
     if matches!(trimmed, "" | "." | "..")
         || trimmed.chars().any(|c| {
@@ -121,6 +124,9 @@ fn reserved_name(name: &str) -> bool {
 
 /// Moves the file into `dir`, choosing a numbered name if needed.
 pub fn move_to(path: &Path, dir: &Path) -> Result<PathBuf, String> {
+    if !path.is_file() {
+        return Err(format!("{path:?} is not a file"));
+    }
     let source_dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -137,6 +143,23 @@ pub fn move_to(path: &Path, dir: &Path) -> Result<PathBuf, String> {
     transfer_to_folder(path, dir)
 }
 
+/// MoveFileExW can report success after copying across volumes even when the original remains.
+fn verify_move(source: &Path, target: &Path) -> Result<(), String> {
+    match source.symlink_metadata() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(format!(
+            "{} was copied to {}, but the original could not be removed",
+            source.display(),
+            target.display()
+        )),
+        Err(error) => Err(format!(
+            "Could not verify that {} was removed after moving to {}: {error}",
+            source.display(),
+            target.display()
+        )),
+    }
+}
+
 fn transfer_to_folder(path: &Path, dir: &Path) -> Result<PathBuf, String> {
     let name = path
         .file_name()
@@ -145,7 +168,10 @@ fn transfer_to_folder(path: &Path, dir: &Path) -> Result<PathBuf, String> {
     let mut number = 2;
     loop {
         match transfer(path, &target) {
-            Ok(()) => return Ok(target),
+            Ok(()) => {
+                verify_move(path, &target)?;
+                return Ok(target);
+            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists || target.is_dir() => {}
             Err(error) => {
                 return Err(format!(

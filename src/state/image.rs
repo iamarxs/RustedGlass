@@ -66,65 +66,118 @@ impl State {
         }
     }
 
-    /// Decode only the image entering view, skipping unreadable entries.
+    /// Decode only the image entering view.
     pub fn load_current(&mut self) {
-        self.load_skipping(None);
+        self.load_file();
     }
 
-    fn load_skipping(&mut self, failed_frame: Option<PathBuf>) {
+    /// The "X is unreadable." notice, shared by the sync and drained-failure paths.
+    pub(super) fn report_unreadable(&mut self, path: &Path, error: &str) {
+        let name = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy();
+        let mut notice = format!("{name} is unreadable.");
+        if !error.is_empty() {
+            notice.push_str(&format!(" {error}"));
+        }
+        self.notice = Some(notice);
+        self.unreadable_notice_pending = true;
+    }
+
+    /// A terminal frame or rewind failure: the stream is gone and the file is not reopened
+    /// by itself. The last good frame stays on screen with one notice, the cursor and the
+    /// pending flag clear, and a slideshow may still advance at its deadline.
+    pub(super) fn stop_animation(&mut self) {
+        self.animation = None;
+        self.animated_selection = false;
+        self.frame_pending = false;
+        self.animation_played_once = true;
+        let name = self
+            .photos
+            .current()
+            .map(|path| {
+                path.file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .unwrap_or_else(|| String::from("The animation"));
+        self.notice = Some(format!("{name} stopped playing. Showing the last frame."));
+    }
+
+    /// An unreadable file stays in the playlist (removing it would silently drop it from a
+    /// saved playlist too); the load stops at it and the notice carries the decode error.
+    pub(super) fn load_file(&mut self) {
         self.slide_revision = self.slide_revision.wrapping_add(1);
         self.navigation_pending = false;
+        self.selection = 0;
+        self.load_pending = false;
+        self.file_size = None;
         self.animation = None;
+        self.animated_selection = false;
         self.animation_played_once = false;
+        self.frame_pending = false;
         self.slideshow_elapsed = false;
         self.rotation_turns = 0;
         self.drag = None;
         self.message = None;
 
         self.bitmap = None;
-        self.file_size = self
-            .photos
-            .current()
-            .and_then(|path| path.metadata().ok())
-            .map(|metadata| metadata.len());
         if self.zoom_mode != ZoomMode::LockZoom {
             self.clear_manual_zoom();
         }
-        // An unreadable file stays in the playlist (removing it would silently drop it from a
-        // saved playlist too); the load stops at it and the notice carries the decode error.
-        let mut failure: Option<(PathBuf, String)> = failed_frame.map(|p| (p, String::new()));
 
-        while let Some(path) = self.photos.current().cloned() {
-            // One decode per file: a cache hit needs none, a still is stored from its only
-            // decode, and an animation streams its frames from the same single open.
-            if let Some(bitmap) = crate::cache::cached(&path) {
+        // With the worker, the decode runs on its lane and the reply carries the pixels:
+        // the UI applies them when they arrive, keyed to this generation.
+        if let Some(worker) = self.worker.as_ref() {
+            let Some(path) = self.photos.current().cloned() else {
+                self.message = Some(
+                    "Drop files or a folder here. Press O to open files or F to open a folder."
+                        .into(),
+                );
+                return;
+            };
+            if let Some((stat, bitmap)) = crate::cache::cached_with_stat(&path) {
+                self.file_size = Some(stat.0);
                 self.bitmap = Some(bitmap);
-                break;
+                return;
             }
-            match decode::open(&path) {
-                Ok(decode::Opened::Still(decoded)) => {
-                    self.bitmap = Some(crate::cache::store(&path, decoded));
+            match worker.open(path.clone()) {
+                Ok(generation) => {
+                    self.selection = generation;
+                    self.load_pending = true;
                 }
-                Ok(decode::Opened::Animated(animation, first)) => {
-                    self.animation = Some(animation);
-                    self.show_frame(first);
-                }
-                Err(e) => failure = Some((path, e)),
+                Err(_) => self.report_unreadable(&path, "The decoder is unavailable."),
             }
-            break;
+            return;
+        }
+        let mut failure: Option<(PathBuf, String)> = None;
+
+        if let Some(path) = self.photos.current().cloned() {
+            if let Some((stat, bitmap)) = crate::cache::cached_with_stat(&path) {
+                self.file_size = Some(stat.0);
+                self.bitmap = Some(bitmap);
+            } else {
+                // One stat before the decode: the file size to report, and the identity
+                // the just-decoded pixels are stored under only if the file still matches.
+                let before = crate::cache::stat(&path);
+                self.file_size = before.map(|(len, _)| len);
+                match decode::open(&path) {
+                    Ok(decode::Opened::Still(decoded)) => {
+                        self.bitmap = Some(crate::cache::store_checked(&path, before, decoded));
+                    }
+                    Ok(decode::Opened::Animated(animation, first)) => {
+                        self.animation = Some(animation);
+                        self.show_frame(first);
+                    }
+                    Err(e) => failure = Some((path, e)),
+                }
+            }
         }
 
         if let Some((path, error)) = failure {
-            let name = path
-                .file_name()
-                .unwrap_or(path.as_os_str())
-                .to_string_lossy();
-            let mut notice = format!("{name} is unreadable.");
-            if !error.is_empty() {
-                notice.push_str(&format!(" {error}"));
-            }
-            self.notice = Some(notice);
-            self.unreadable_notice_pending = true;
+            self.report_unreadable(&path, &error);
         }
         if self.bitmap.is_none() {
             self.message = Some(
@@ -135,6 +188,15 @@ impl State {
 
     /// Called after the current frame has had its full display delay.
     pub fn advance_frame(&mut self) {
+        if let Some(worker) = self.worker.as_ref() {
+            // A slow frame holds the picture; the frame timer re-arms until the reply lands.
+            if self.frame_pending || !self.animated_selection {
+                return;
+            }
+            let result = worker.next_frame(self.selection);
+            self.track_frame_request(result);
+            return;
+        }
         let Some(animation) = &mut self.animation else {
             return;
         };
@@ -146,33 +208,60 @@ impl State {
                     self.rewind_animation();
                 }
             }
-            Err(_) => self.load_skipping(self.photos.current().cloned()),
+            Err(_) => self.stop_animation(),
         }
     }
 
     pub(super) fn rewind_animation(&mut self) {
+        if let Some(worker) = self.worker.as_ref() {
+            if self.frame_pending || !self.animated_selection {
+                return;
+            }
+            let result = worker.rewind(self.selection);
+            self.track_frame_request(result);
+            return;
+        }
         let Some(animation) = &mut self.animation else {
             return;
         };
         match animation.rewind().and_then(|_| animation.next_frame()) {
             Ok(Some(frame)) => self.show_frame(frame),
-            _ => self.load_skipping(self.photos.current().cloned()),
+            _ => self.stop_animation(),
         }
     }
 
-    fn show_frame(&mut self, frame: decode::AnimFrame) {
-        let mut bitmap = Bitmap::from_decoded(frame.image);
-        for _ in 0..self.rotation_turns {
-            bitmap.rotate_90_clockwise();
+    fn track_frame_request(&mut self, result: Result<(), worker::Rejected>) {
+        match result {
+            Ok(()) => self.frame_pending = true,
+            Err(worker::Rejected::Busy) => {}
+            Err(worker::Rejected::Disconnected) => {
+                self.animated_selection = false;
+                if let Some(path) = self.photos.current().cloned() {
+                    self.report_unreadable(&path, "The decoder is unavailable.");
+                }
+            }
         }
-        self.bitmap = Some(bitmap);
+    }
+
+    pub(super) fn show_frame(&mut self, frame: decode::AnimFrame) {
+        if let Some(bitmap) = self.bitmap.as_mut().filter(|_| self.rotation_turns == 0) {
+            bitmap.replace_decoded(frame.image);
+        } else {
+            let mut bitmap = Bitmap::from_decoded(frame.image);
+            for _ in 0..self.rotation_turns {
+                bitmap.rotate_90_clockwise();
+            }
+            self.bitmap = Some(bitmap);
+        }
         self.frame_ms = frame.delay_ms;
         self.frame_revision = self.frame_revision.wrapping_add(1);
     }
 
     pub fn frame_delay_ms(&self) -> u32 {
         if self.navigation_pending
-            || self.animation.is_none()
+            || self.load_pending
+            || self.frame_pending
+            || !self.is_animated()
             || (self.slideshow_paused
                 && self.knobs.play_gif_once
                 && !self.slideshow_paused_by_space)

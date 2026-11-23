@@ -28,6 +28,7 @@ pub enum Action {
     FitOriginal,
     ZoomIn,
     ZoomOut,
+    ExactZoom,
     Previous,
     Next,
     First,
@@ -38,7 +39,6 @@ pub enum Action {
     ToggleRepeat,
     StartSlideshow,
     StopSlideshow,
-    StopSlideshowAndArmQuit,
     ToggleSlideshowPause,
     OpenFile,
     /// Replaces the list with the images of a folder.

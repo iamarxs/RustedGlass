@@ -10,45 +10,39 @@ pub fn on_wheel(hwnd: HWND, wparam: WPARAM) {
         view::navigate(hwnd, if delta < 0 { 1 } else { -1 });
         return;
     }
-    state::with_state(|state| {
-        // Up is nearer, down is further.
-        let step = zoom::zoom_step(state.knobs.zoom_speed, delta);
-        state.zoom_by(screen, if delta > 0 { step } else { 1.0 / step });
-    });
-    view::refresh(hwnd);
+    view::zoom_overlay::step(hwnd, screen, delta);
 }
 
-/// A drag moves the image, as far as `PanSpeed` lets it.
+/// A drag moves the image within the canvas at the configured pan speed.
 pub fn on_drag(hwnd: HWND, lparam: LPARAM) {
+    let screen = unsafe { w32::client_size(hwnd) };
+    let pointer = (w32::pointer_x(lparam), w32::pointer_y(lparam));
     state::with_state(|state| {
         if !state.knobs.free_pan {
             return;
         }
-        let (x, y) = state
-            .drag
-            .unwrap_or((w32::pointer_x(lparam), w32::pointer_y(lparam)));
-        state.is_dragging = true;
-        let step = state.knobs.pan_speed.max(1) as f64 / 20.0;
-        state.offset = (
-            state
-                .offset
-                .0
-                .saturating_add(((w32::pointer_x(lparam) - x) as f64 * step).round() as i32),
-            state
-                .offset
-                .1
-                .saturating_add(((w32::pointer_y(lparam) - y) as f64 * step).round() as i32),
-        );
-        state.drag = Some((w32::pointer_x(lparam), w32::pointer_y(lparam)));
+        let (x, y) = state.drag.unwrap_or(pointer);
+        if let Some(bitmap) = state.frame() {
+            let step = state.knobs.pan_speed as f64 / 20.0;
+            let delta = (
+                ((pointer.0 - x) as f64 * step).round() as i32,
+                ((pointer.1 - y) as f64 * step).round() as i32,
+            );
+            state.offset = crate::render::pan_offset(
+                (bitmap.width, bitmap.height),
+                screen,
+                state.factor(screen),
+                state.offset,
+                delta,
+            );
+        }
+        state.drag = Some(pointer);
     });
     unsafe { w32::invalidate(hwnd) };
 }
 
 pub fn on_drag_end() {
-    state::with_state(|state| {
-        state.is_dragging = false;
-        state.drag = None;
-    });
+    state::with_state(|state| state.drag = None);
 }
 
 /// The right-click menu at the pointer.

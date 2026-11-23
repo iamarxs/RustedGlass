@@ -18,34 +18,30 @@ pub fn decode(path: &Path) -> Result<Decoded, String> {
     Ok(to_decoded(load_rgba(path)?))
 }
 
-/// Decoders never see an image wider/taller than this or bigger than `MAX_PIXEL_BYTES`, so a
-/// crafted header cannot ask for a multi-gigabyte buffer. The `image` crate's default limits
-/// cap allocations only, not dimensions, and `into_decoder` does not reserve-check the output
-/// buffer the way `ImageReader::decode` does — so the dimensions are checked here as well.
+/// Decoders never see an image wider/taller than this, or one whose buffers go over the app
+/// budget, so a crafted header cannot ask for a multi-gigabyte allocation. The `image` crate's
+/// default limits cap allocations only, not dimensions, and `into_decoder` does not
+/// reserve-check the output buffer the way `ImageReader::decode` does — so the dimensions are
+/// checked here as well.
 const MAX_DIMENSION: u32 = 16384;
-const MAX_PIXEL_BYTES: u64 = 512 * 1024 * 1024;
 
 fn limits() -> image::Limits {
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_DIMENSION);
     limits.max_image_height = Some(MAX_DIMENSION);
+    limits.max_alloc = Some(budget::MAX_BUDGET);
     limits
 }
 
 /// Rejects dimensions no Win32 bitmap could hold, before any full-size buffer is allocated.
 fn check_dimensions(path: &Path, decoder: &impl image::ImageDecoder) -> Result<(), String> {
     let (width, height) = decoder.dimensions();
-    if width == 0
-        || height == 0
-        || width > MAX_DIMENSION
-        || height > MAX_DIMENSION
-        || decoder.total_bytes() > MAX_PIXEL_BYTES
-    {
+    if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
         return Err(format!(
             "{path:?}: {width}x{height} is too large to display"
         ));
     }
-    Ok(())
+    budget::check(width, height, decoder.total_bytes()).map_err(|error| format!("{path:?}: {error}"))
 }
 
 fn load_rgba(path: &Path) -> Result<image::RgbaImage, String> {
@@ -216,6 +212,9 @@ fn anim_frames(
     };
     Ok((frames, orientation))
 }
+
+/// Sizes and buffers for one image, checked before allocation.
+mod budget;
 
 #[cfg(test)]
 mod tests;
