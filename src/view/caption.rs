@@ -15,6 +15,7 @@ pub(super) fn update(hwnd: HWND) {
         let Some(path) = state.photos.current() else {
             return Some(TITLE.to_string());
         };
+        let area = crate::view::image_area(area, state);
         let mut title = format!(
             "{TITLE} | {} ({}/{})",
             w32::file_name(path),
@@ -66,6 +67,22 @@ fn file_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::dialog::Dialog;
+
+    #[test]
+    fn visible_playlist_limits_picture_to_left_half() {
+        let mut state = crate::state::State::new(crate::test_path("unused-config.json"), &[]);
+        let area = (1000, 500);
+        state.dialog = Dialog::None;
+        state.playlist_visible = true;
+        assert_eq!(crate::view::image_area(area, &state), (500, 500));
+        state.playlist_visible = false;
+        assert_eq!(crate::view::image_area(area, &state), area);
+        state.playlist_visible = true;
+        state.dialog = Dialog::Shortcuts;
+        assert_eq!(crate::view::image_area(area, &state), area);
+    }
+
     #[test]
     fn file_sizes_switch_to_megabytes_at_one_megabyte() {
         assert_eq!(super::file_size(305_439), "298.28 KB");

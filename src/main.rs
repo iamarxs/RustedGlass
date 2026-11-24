@@ -27,6 +27,8 @@ mod style;
 mod tools;
 mod tooltip;
 mod update_check;
+mod update_install;
+mod update_package;
 mod view;
 mod w32;
 mod zoom;
@@ -42,7 +44,7 @@ Usage:
   RustedGlass.exe [PATH] [options]
 
 Arguments:
-  PATH                  Image, folder or .rgpl playlist to open
+  PATH                  Image, folder, .rgpl or .rgplz playlist to open
                         Use -- before a path that starts with a dash
 
 Options:
@@ -89,6 +91,9 @@ By default, settings are read from and written to rgconfig.json next to the exec
 ";
 
 fn main() {
+    if update_install::run_helper_if_requested() {
+        return;
+    }
     let (config_path, original_args) = match config_option(std::env::args().skip(1)) {
         Ok(options) => options,
         Err(error) => fail(&error),

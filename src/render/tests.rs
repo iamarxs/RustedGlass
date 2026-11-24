@@ -1,5 +1,8 @@
 use super::*;
-use windows::Win32::Graphics::Gdi::{GetDC, ReleaseDC, COLORONCOLOR, HALFTONE};
+use windows::Win32::Graphics::Gdi::{
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
+    BITMAPINFO, COLORONCOLOR, DIB_RGB_COLORS, HALFTONE,
+};
 
 /// A real DIB section to draw into and read back, so surface checks never go through a mock.
 struct Canvas {

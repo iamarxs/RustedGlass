@@ -5,15 +5,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Replace a file only after its complete new contents have been written to the same directory.
 pub fn write(path: &Path, contents: &[u8]) -> Result<(), String> {
-    replace(path, |output| output.write_all(contents))
+    write_with(path, |output| output.write_all(contents))
 }
 
 pub fn copy(source: &Path, target: &Path) -> Result<(), String> {
     let mut input = fs::File::open(source).map_err(|error| format!("{source:?}: {error}"))?;
-    replace(target, |output| io::copy(&mut input, output).map(|_| ()))
+    write_with(target, |output| io::copy(&mut input, output).map(|_| ()))
 }
 
-fn replace(path: &Path, write: impl FnOnce(&mut fs::File) -> io::Result<()>) -> Result<(), String> {
+/// Replace a file after the callback has written and flushed its contents.
+pub fn write_with(
+    path: &Path,
+    write: impl FnOnce(&mut fs::File) -> io::Result<()>,
+) -> Result<(), String> {
     let directory = path.parent().unwrap_or(Path::new("."));
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let pending = directory.join(format!(

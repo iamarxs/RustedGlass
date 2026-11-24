@@ -41,6 +41,30 @@ pub fn cached_with_stat(path: &Path) -> Option<(FileStat, Bitmap)> {
     STILLS.with_borrow_mut(|cache| take_hit(cache, &key).map(|bitmap| ((key.1, key.2), bitmap)))
 }
 
+/// The stat under which `path`'s pixels are cached, newest entry first, in memory only:
+/// the candidate the decode lane validates against the live file, so the window thread
+/// takes no stat of its own.
+pub fn candidate(path: &Path) -> Option<FileStat> {
+    STILLS.with_borrow(|cache| {
+        cache
+            .iter()
+            .find(|(saved, _)| saved.0 == path)
+            .map(|(saved, _)| (saved.1, saved.2))
+    })
+}
+
+/// The cached copy of a still for a stat that matches exactly, in memory only: the stat
+/// the decode lane validated against the live file. The entry moves to the front.
+pub fn hit(path: &Path, file_stat: FileStat) -> Option<Bitmap> {
+    STILLS.with_borrow_mut(|cache| {
+        let index = cache
+            .iter()
+            .position(|(saved, _)| saved.0 == path && (saved.1, saved.2) == file_stat)?;
+        let key = cache[index].0.clone();
+        take_hit(cache, &key)
+    })
+}
+
 /// Stores a still that was just decoded, so the next visit needs no decode: the tests'
 /// entry point, which vouches for the file with a fresh stat at store time.
 #[cfg(test)]
@@ -53,9 +77,20 @@ pub fn store(path: &Path, decoded: decode::Decoded) -> Bitmap {
 /// a changed or vanished file is left out, so its stale pixels cannot poison the next
 /// visit, while the decoded image still shows.
 pub fn store_checked(path: &Path, before: Option<FileStat>, decoded: decode::Decoded) -> Bitmap {
+    let validated = before.filter(|before| stat(path) == Some(*before));
+    store_validated(path, validated, decoded)
+}
+
+/// Stores a still the decode lane already validated: `validated` is the file stat it
+/// rechecked after the decode, so the UI thread stores without statting again. A
+/// missing or invalidated stat stores nothing — the decoded pixels still show.
+pub fn store_validated(
+    path: &Path,
+    validated: Option<FileStat>,
+    decoded: decode::Decoded,
+) -> Bitmap {
     let pixels = Bitmap::from_decoded(decoded);
-    let unchanged = before.is_some_and(|before| stat(path).is_some_and(|now| now == before));
-    if let (Some((len, modified)), true) = (before, unchanged) {
+    if let Some((len, modified)) = validated {
         STILLS.with_borrow_mut(|cache| {
             insert(
                 cache,
@@ -119,6 +154,24 @@ mod tests {
         }
         assert_eq!(cache.len(), MAX_ENTRIES, "the handle count stays bounded");
         assert_eq!(cache.front().unwrap().0, key(MAX_ENTRIES as u64 + 1));
+    }
+
+    #[test]
+    fn a_validated_stat_stores_without_statting_and_a_missing_one_shows_only() {
+        let path = crate::test_path("cache-store-validated.png");
+        std::fs::write(&path, b"bytes").unwrap();
+        let good = stat(&path).unwrap();
+        let pixels = store_validated(&path, Some(good), tiny_decoded());
+        assert_eq!(pixels.width, 1);
+        assert_eq!(hit(&path, good).unwrap().width, 1);
+        assert_eq!(candidate(&path), Some(good));
+        let (len, modified) = good;
+        let wrong = (len + 1, modified);
+        assert!(hit(&path, wrong).is_none(), "a foreign stat is not a hit");
+        std::fs::remove_file(&path).unwrap();
+        let pixels = store_validated(&path, None, tiny_decoded());
+        assert_eq!(pixels.width, 1, "the decoded image still shows");
+        assert_eq!(candidate(&path), Some(good), "nothing new was stored");
     }
 
     #[test]

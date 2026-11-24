@@ -5,14 +5,16 @@
 use std::cell::Cell;
 
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{CreateSolidBrush, DeleteObject, FillRect, HBRUSH};
+use windows::Win32::Graphics::Gdi::{CreateSolidBrush, FillRect, HBRUSH};
 use windows::Win32::UI::Controls::{
     CDDS_ITEMPREPAINT, CDDS_POSTPAINT, CDDS_PREPAINT, CDRF_DODEFAULT, CDRF_NEWFONT,
-    CDRF_NOTIFYITEMDRAW, CDRF_NOTIFYPOSTPAINT, LVHITTESTINFO, LVIS_SELECTED, LVM_HITTEST,
+    CDRF_NOTIFYITEMDRAW, CDRF_NOTIFYPOSTPAINT, LIST_VIEW_ITEM_STATE_FLAGS, LVHITTESTINFO,
+    LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_HITTEST, LVM_SETITEMSTATE,
     NMCUSTOMDRAW_DRAW_STATE_FLAGS, NMLVCUSTOMDRAW, NM_CUSTOMDRAW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetCapture, ReleaseCapture, SetCapture, SetFocus, VK_ESCAPE,
+    GetCapture, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VIRTUAL_KEY, VK_CONTROL,
+    VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_RIGHT, VK_UP,
 };
 use windows::Win32::UI::Shell::DefSubclassProc;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -21,15 +23,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::dialog::PANEL_COLOR;
-use crate::{playlist, state, w32};
+use crate::{input, playlist, state, w32};
 
 thread_local! {
     // Capture owner, source row, and the optional preview window.
     static DRAG: Cell<Option<(HWND, i32, Option<HWND>)>> = const { Cell::new(None) };
     /// Brushes for the two row colours, made once each. The Rust runtime does not free GDI
     /// objects, and there are never more than two.
-    static ROW_BRUSH: Cell<HBRUSH> = const { Cell::new(HBRUSH(std::ptr::null_mut())) };
-    static ROW_COLOR: Cell<COLORREF> = const { Cell::new(COLORREF(0)) };
+    static ROW_BRUSHES: [Cell<HBRUSH>; 2] =
+        const { [const { Cell::new(HBRUSH(std::ptr::null_mut())) }; 2] };
 }
 
 /// Takes the list's mouse messages over. `SetWindowSubclass` keeps the procedure for the life of
@@ -57,6 +59,9 @@ pub fn end_drag() {
 const START_DRAG: u32 = WM_APP + 2;
 
 pub fn begin_drag(hwnd: HWND, row: i32) {
+    if state::read_state(|state| state.browsing_import_preview()) == Some(true) {
+        return;
+    }
     if row >= 0 {
         // The list can release its own capture after returning from LVN_BEGINDRAG.
         let _ = unsafe { PostMessageW(Some(hwnd), START_DRAG, WPARAM(row as usize), LPARAM(0)) };
@@ -125,20 +130,12 @@ pub fn custom_draw(lparam: LPARAM) -> LRESULT {
 }
 
 fn row_brush(color: COLORREF) -> HBRUSH {
-    ROW_BRUSH.with(|brush| {
-        ROW_COLOR.with(|cached| unsafe {
-            let known = brush.get();
-            if cached.get() == color && !known.0.is_null() {
-                return known;
-            }
-            if !known.0.is_null() {
-                let _ = DeleteObject(known.into());
-            }
-            let made = CreateSolidBrush(color);
-            cached.set(color);
-            brush.set(made);
-            made
-        })
+    ROW_BRUSHES.with(|brushes| {
+        let brush = &brushes[usize::from(color != PANEL_COLOR)];
+        if brush.get().0.is_null() {
+            brush.set(unsafe { CreateSolidBrush(color) });
+        }
+        brush.get()
     })
 }
 
@@ -154,32 +151,26 @@ unsafe extern "system" fn list_proc(
 ) -> LRESULT {
     unsafe {
         match message {
+            windows::Win32::UI::WindowsAndMessaging::WM_NOTIFY => {
+                if let Some(result) = playlist::header_notify(hwnd, lparam) {
+                    return result;
+                }
+            }
             WM_KEYDOWN if wparam.0 == VK_ESCAPE.0 as usize && DRAG.get().is_some() => {
                 end_drag();
                 return LRESULT(0);
             }
-            WM_KEYDOWN
-                if matches!(
-                    wparam.0,
-                    0x1b | 0x2e
-                        | 0x70
-                        | 0x71
-                        | 0x7a
-                        | 0x7b
-                        | 0x41
-                        | 0x43
-                        | 0x45
-                        | 0x49
-                        | 0x4c
-                        | 0x4d
-                        | 0x4f
-                        | 0x52
-                        | 0x53
-                        | 0x54
-                ) =>
-            {
-                if let Ok(parent) = GetParent(hwnd) {
-                    return SendMessageW(parent, message, Some(wparam), Some(lparam));
+            WM_KEYDOWN => {
+                let key = VIRTUAL_KEY(wparam.0 as u16);
+                let list_navigation =
+                    matches!(key, VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN | VK_HOME | VK_END);
+                let ctrl = GetKeyState(i32::from(VK_CONTROL.0)) < 0;
+                if !list_navigation
+                    && input::on_key(wparam.0 as u32, ctrl, input::shift_held(lparam)).is_some()
+                {
+                    if let Ok(parent) = GetParent(hwnd) {
+                        return SendMessageW(parent, message, Some(wparam), Some(lparam));
+                    }
                 }
             }
             START_DRAG => {
@@ -208,6 +199,9 @@ unsafe extern "system" fn list_proc(
                         crate::view::refresh(parent);
                     }
                 }
+                // A drag that moved nothing (or ended outside the rows) still selected the pressed
+                // row natively; put the selection back on the picture so the two agree.
+                select_current(hwnd);
                 if let Ok(parent) = GetParent(hwnd) {
                     let _ = SetFocus(Some(parent));
                 }
@@ -216,7 +210,9 @@ unsafe extern "system" fn list_proc(
             WM_CAPTURECHANGED | WM_CANCELMODE | WM_NCDESTROY => end_drag(),
             WM_DROPFILES => {
                 if let Ok(parent) = GetParent(hwnd) {
-                    return SendMessageW(parent, message, Some(wparam), Some(lparam));
+                    // The drop point belongs to the list's client area, so mark the
+                    // forwarded message explicitly for the parent.
+                    return SendMessageW(parent, message, Some(wparam), Some(LPARAM(1)));
                 }
             }
             _ => {}
@@ -242,13 +238,43 @@ unsafe fn row_under(hwnd: HWND, lparam: LPARAM) -> i32 {
     .0 as i32
 }
 
+/// Puts the native selection back on the shown row, without changing the picture. The list
+/// selects whatever a drag was pressed on, which may not be the row the viewer shows.
+fn select_current(hwnd: HWND) {
+    let Some(row) =
+        state::with_state(|state| state.photos.current().map(|_| state.photos.index)).flatten()
+    else {
+        return;
+    };
+    let mask = LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0);
+    let mut item = LVITEMW {
+        stateMask: mask,
+        ..Default::default()
+    };
+    unsafe {
+        let _ = SendMessageW(
+            hwnd,
+            LVM_SETITEMSTATE,
+            Some(WPARAM(usize::MAX)),
+            Some(LPARAM(&item as *const _ as isize)),
+        );
+        item.state = mask;
+        let _ = SendMessageW(
+            hwnd,
+            LVM_SETITEMSTATE,
+            Some(WPARAM(row)),
+            Some(LPARAM(&item as *const _ as isize)),
+        );
+    }
+}
+
 /// Puts the row `from` where the row `to` is, and shows the list in that order. The shown picture
 /// keeps its row: only the order changes.
 fn move_row(from: i32, to: i32) {
     state::with_state(|state| {
         state.photos.move_row(from as usize, to as usize);
-        playlist::sync(&state.photos);
     });
+    playlist::refresh(None);
 }
 
 mod preview;

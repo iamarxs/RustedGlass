@@ -30,8 +30,15 @@ fn rename_and_move_keep_the_extension_and_refuse_bad_names() {
     let file = dir.join("cat.png");
     fs::write(&file, b"pixels").unwrap();
 
-    assert_eq!(stem(&file), "cat");
+    assert_eq!(prefill(&file).0, "cat.png");
+    assert_eq!(prefill(&file).1, 3, "only the stem is pre-selected");
     assert_eq!(extension(&file), ".png");
+
+    // An unchanged full name is a no-op, not a mangled rename.
+    let dotted = dir.join("trip.v2.jpg");
+    fs::write(&dotted, b"pixels").unwrap();
+    assert_eq!(rename(&dotted, "trip.v2.jpg").unwrap(), dotted);
+    assert!(dotted.exists());
 
     assert!(rename(&file, "").is_err());
     assert!(rename(&file, "no/path").is_err());
@@ -67,9 +74,31 @@ fn rename_and_move_keep_the_extension_and_refuse_bad_names() {
 #[test]
 fn a_name_without_an_extension_is_kept_whole() {
     let path = PathBuf::from("notes");
-    assert_eq!(stem(&path), "notes");
+    assert_eq!(prefill(&path).0, "notes");
+    assert_eq!(
+        prefill(&path).1,
+        5,
+        "an extensionless name is selected whole"
+    );
     assert_eq!(extension(&path), "");
     assert_eq!(file_name(&path), "notes");
+}
+
+#[test]
+fn prefill_selects_the_dotted_stem_and_counts_utf16_units() {
+    // Typing over the selection turns "trip.v2.jpg" into "holiday.jpg".
+    let (name, stem_len) = prefill(Path::new("trip.v2.jpg"));
+    assert_eq!(name, "trip.v2.jpg");
+    assert_eq!(
+        stem_len, 7,
+        "the dotted stem is selected, not the whole name"
+    );
+
+    // A leading dot does not split the name, exactly like `extension`.
+    assert_eq!(prefill(Path::new(".hidden")).1, 7);
+
+    // A non-BMP character is two UTF-16 units, matching edit-control offsets.
+    assert_eq!(prefill(Path::new("🖼café.png")).1, 6);
 }
 
 #[test]

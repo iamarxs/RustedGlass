@@ -6,11 +6,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+#[cfg(test)]
+use windows::Win32::Graphics::Gdi::HBITMAP;
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, SetStretchBltMode,
-    StretchBlt, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, SRCCOPY,
-    STRETCH_BLT_MODE,
+    SetStretchBltMode, StretchBlt, BITMAPINFOHEADER, HDC, SRCCOPY, STRETCH_BLT_MODE,
 };
+
+mod surface;
+use surface::Dib;
 
 use crate::decode::Decoded;
 
@@ -143,78 +146,6 @@ fn pack(rgba: &mut [u8]) {
     }
 }
 
-struct Dib {
-    dc: HDC,
-    bitmap: HBITMAP,
-    previous: HGDIOBJ,
-    bits: *mut u8,
-}
-
-impl Dib {
-    /// A top-down 32-bit DIB section with its own memory DC, uploaded with `pixels`.
-    unsafe fn create(
-        reference: HDC,
-        width: u32,
-        height: u32,
-        pixels: &[u8],
-    ) -> Result<Dib, String> {
-        let info = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: width as i32,
-                biHeight: -(height as i32), // negative height = top-down rows
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: 0,
-                ..Default::default()
-            },
-            bmiColors: [Default::default()],
-        };
-
-        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-        let bitmap = CreateDIBSection(Some(reference), &info, DIB_RGB_COLORS, &mut bits, None, 0)
-            .map_err(|e| format!("CreateDIBSection failed: {e}"))?;
-
-        let dc = unsafe { CreateCompatibleDC(Some(reference)) };
-        if bits.is_null() || dc.is_invalid() {
-            let _ = unsafe { DeleteObject(bitmap.into()) };
-            if !dc.is_invalid() {
-                let _ = unsafe { DeleteDC(dc) };
-            }
-            return Err("Could not create a bitmap drawing surface".into());
-        }
-        let previous = unsafe { SelectObject(dc, bitmap.into()) };
-        if previous.is_invalid() {
-            let _ = unsafe { DeleteDC(dc) };
-            let _ = unsafe { DeleteObject(bitmap.into()) };
-            return Err("Could not select the bitmap for drawing".into());
-        }
-        let surface = Dib {
-            dc,
-            bitmap,
-            previous,
-            bits: bits.cast::<u8>(),
-        };
-        unsafe { surface.upload(pixels) };
-        Ok(surface)
-    }
-
-    /// Rewrites a same-size surface without touching its handles.
-    unsafe fn upload(&self, pixels: &[u8]) {
-        unsafe { std::ptr::copy_nonoverlapping(pixels.as_ptr(), self.bits, pixels.len()) };
-    }
-}
-
-impl Drop for Dib {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = SelectObject(self.dc, self.previous);
-            let _ = DeleteDC(self.dc);
-            let _ = DeleteObject(self.bitmap.into());
-        }
-    }
-}
-
 /// The factor used when the image is fitted to the window: the largest factor that still fits,
 /// so small images are enlarged and large ones are shrunk.
 pub fn fit_factor(image: (u32, u32), screen: (u32, u32)) -> f64 {
@@ -238,8 +169,8 @@ pub fn dest_rect(
     let height = (image.1 as f64 * factor).max(1.0);
 
     (
-        ((screen.0 as f64 - width) / 2.0) as i32 + offset.0,
-        ((screen.1 as f64 - height) / 2.0) as i32 + offset.1,
+        (((screen.0 as f64 - width) / 2.0) as i32).saturating_add(offset.0),
+        (((screen.1 as f64 - height) / 2.0) as i32).saturating_add(offset.1),
         width as i32,
         height as i32,
     )
@@ -261,11 +192,79 @@ pub fn pan_offset(
     )
 }
 
-fn pan_axis(centered: i32, extent: i32, canvas: i32, offset: i32, delta: i32) -> i32 {
+/// The offsets a `canvas`-sized area accepts for an image `extent` wide drawn at `centered`.
+fn axis_bounds(centered: i32, extent: i32, canvas: i32) -> (i32, i32) {
     let slack = canvas - extent;
-    let min = slack.min(0).saturating_sub(centered).min(offset);
-    let max = slack.max(0).saturating_sub(centered).max(offset);
-    offset.saturating_add(delta).clamp(min, max)
+    (
+        slack.min(0).saturating_sub(centered),
+        slack.max(0).saturating_sub(centered),
+    )
+}
+
+fn pan_axis(centered: i32, extent: i32, canvas: i32, offset: i32, delta: i32) -> i32 {
+    let (min, max) = axis_bounds(centered, extent, canvas);
+    offset
+        .saturating_add(delta)
+        .clamp(min.min(offset), max.max(offset))
+}
+
+/// The offset that keeps the image point under `anchor`, a client point, on the same spot while
+/// the factor goes from `from` to `to`, as far as the pan limits of `to` allow. `from` or `to`
+/// of `0.0` mean the fitted factor, like `dest_rect`; an unknown size keeps `offset`.
+pub fn zoom_offset(
+    image: (u32, u32),
+    screen: (u32, u32),
+    from: f64,
+    to: f64,
+    offset: (i32, i32),
+    anchor: (i32, i32),
+) -> (i32, i32) {
+    if image.0 == 0 || image.1 == 0 || screen.0 == 0 || screen.1 == 0 {
+        return offset;
+    }
+    let fitted = |scale: f64| {
+        if scale > 0.0 {
+            scale
+        } else {
+            fit_factor(image, screen)
+        }
+    };
+    let (from, to) = (fitted(from), fitted(to));
+    if !(from.is_finite() && to.is_finite() && from > 0.0 && to > 0.0) {
+        return offset;
+    }
+
+    let (x, y, old_width, old_height) = dest_rect(image, screen, from, offset);
+    let (centered_x, centered_y, width, height) = dest_rect(image, screen, to, (0, 0));
+    let axis = |was: i32, old_extent: i32, centered: i32, extent: i32, canvas: i32, at: i32| {
+        let ratio = f64::from(extent) / f64::from(old_extent);
+        let wanted = f64::from(at)
+            - ((f64::from(at) - f64::from(was)) * ratio).round()
+            - f64::from(centered);
+        let (min, max) = axis_bounds(centered, extent, canvas);
+        (wanted as i32).clamp(min, max)
+    };
+    (
+        axis(x, old_width, centered_x, width, screen.0 as i32, anchor.0),
+        axis(y, old_height, centered_y, height, screen.1 as i32, anchor.1),
+    )
+}
+
+/// The offset that keeps the picture on the canvas: an offset within the pan limits is kept
+/// as is, so an in-bounds pan is never disturbed. Unknown sizes keep the offset.
+pub fn clamped_offset(
+    image: (u32, u32),
+    screen: (u32, u32),
+    scale: f64,
+    offset: (i32, i32),
+) -> (i32, i32) {
+    if image.0 == 0 || image.1 == 0 || screen.0 == 0 || screen.1 == 0 {
+        return offset;
+    }
+    let (x, y, width, height) = dest_rect(image, screen, scale, (0, 0));
+    let (min_x, max_x) = axis_bounds(x, width, screen.0 as i32);
+    let (min_y, max_y) = axis_bounds(y, height, screen.1 as i32);
+    (offset.0.clamp(min_x, max_x), offset.1.clamp(min_y, max_y))
 }
 
 /// Scales and draws `bitmap` centred in `screen`, shifted by `offset`.
@@ -302,3 +301,5 @@ mod clipboard;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod zoom_tests;

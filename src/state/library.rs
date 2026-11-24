@@ -13,6 +13,12 @@ impl State {
     /// Replace the playlist with supported paths from the picker or drop.
     pub fn open_files(&mut self, paths: &[PathBuf]) {
         if self.worker.is_some() {
+            if let [path] = paths {
+                if photo::is_image_file(path, &self.photos.formats) && path.is_file() {
+                    self.open_direct_image(path);
+                    return;
+                }
+            }
             self.submit_import(
                 Source::Batch {
                     paths: paths.to_vec(),
@@ -32,6 +38,7 @@ impl State {
         // `from_files` sorts the rows by name, the order a replacing batch arrives in.
         let photos = PhotoList::from_files(&rows.files, photo::image_formats());
         self.report_skipped(rows.skipped);
+        self.report_import_error(rows.read_error);
         if !photos.is_empty() {
             self.photos = photos;
             self.load_current();
@@ -46,6 +53,7 @@ impl State {
                     path: dir.to_path_buf(),
                     include_hidden: self.knobs.include_hidden,
                     recurse: self.knobs.recurse,
+                    seed: None,
                 },
                 true,
             );
@@ -57,6 +65,7 @@ impl State {
             self.knobs.recurse,
             &self.photos.formats,
         );
+        self.report_import_error(rows.read_error);
         if !rows.files.is_empty() {
             self.photos = PhotoList::empty();
             self.photos.files = rows.files;
@@ -85,10 +94,12 @@ impl State {
         self.append_rows(rows)
     }
 
-    fn append_rows(&mut self, rows: PreparedImport) -> usize {
+    pub(super) fn append_rows(&mut self, rows: PreparedImport) -> usize {
         let was_empty = self.photos.is_empty();
         let added = self.photos.extend_files(rows.files);
         self.report_skipped(rows.skipped);
+        self.report_remote_skipped(rows.remote_skipped);
+        self.report_import_error(rows.read_error);
         if added > 0 && was_empty {
             self.load_current();
             return self.photos.len();
@@ -103,6 +114,7 @@ impl State {
                     path: dir.to_path_buf(),
                     include_hidden: self.knobs.include_hidden,
                     recurse: self.knobs.recurse,
+                    seed: None,
                 },
                 false,
             );
@@ -136,6 +148,25 @@ impl State {
         self.notice = (skipped != 0).then(|| format!("Skipped {skipped} unsupported image(s)."));
     }
 
+    pub(super) fn report_import_error(&mut self, error: Option<String>) {
+        if let Some(error) = error {
+            self.notice = Some(match self.notice.take() {
+                Some(other) => format!("{error} {other}"),
+                None => error,
+            });
+        }
+    }
+
+    pub(super) fn report_remote_skipped(&mut self, skipped: usize) {
+        if skipped != 0 {
+            let message = format!("Skipped {skipped} image(s) on network shares.");
+            self.notice = Some(match self.notice.take() {
+                Some(other) => format!("{other} {message}"),
+                None => message,
+            });
+        }
+    }
+
     /// Read paths in playlist order and report missing entries together.
     pub fn open_playlist(&mut self, path: &Path) -> Result<usize, String> {
         if self.worker.is_some() {
@@ -156,7 +187,7 @@ impl State {
         let rows = prep::playlist(path, &self.photos.formats)?;
         // Every row is a file, a missing path or a skipped one, so the original count is
         // their sum: an empty playlist still clears, an all-missing one leaves the rows.
-        let original_count = rows.files.len() + rows.skipped + rows.missing;
+        let original_count = rows.files.len() + rows.skipped + rows.missing + rows.remote_skipped;
         let loaded = !rows.files.is_empty() || original_count == 0;
         self.report_skipped(rows.skipped);
         if loaded {
@@ -178,6 +209,7 @@ impl State {
                 None => warning,
             });
         }
+        self.report_remote_skipped(rows.remote_skipped);
         Ok(if loaded { self.photos.len() } else { 0 })
     }
 
@@ -188,93 +220,26 @@ impl State {
         Ok(count)
     }
 
-    /// Sorts the playlist rows by name; `descending` reverses them.
-    pub fn sort_by_name(&mut self, descending: bool) {
-        self.photos.sort_by_name(descending);
-    }
-
     /// Takes the shown entry out of the playlist, leaving the file on disk.
     pub fn remove_current(&mut self) -> bool {
+        let undo = self.capture_playlist_edit();
         if self.photos.remove_current().is_none() {
             return false;
         }
+        self.commit_playlist_edit(undo);
         self.load_current();
         true
-    }
-
-    /// Deletes the shown file, then takes its entry out of the playlist.
-    pub fn delete_current(&mut self) -> Result<PathBuf, String> {
-        let path = self.photos.current().cloned().ok_or("No image selected")?;
-        fileops::delete(&path)?;
-        self.photos.remove_matching(|entry| entry == path);
-        self.load_current();
-        Ok(path)
     }
 
     /// Takes the listed rows out of the playlist, leaving the files on disk. The shown picture
     /// stays shown when its row is not one of them.
     pub fn remove_many(&mut self, rows: &[usize]) {
-        self.photos.remove_rows(rows);
-        self.load_current();
-    }
-
-    /// Sends the files of the listed rows to the recycle bin and drops their entries. A file that
-    /// could not be sent is reported, and the rest still go; its rows stay.
-    pub fn delete_many(&mut self, rows: &[usize]) -> Option<String> {
-        let mut failed = None;
-        let mut failure_count = 0;
-        let mut attempts = std::collections::HashMap::new();
-        for row in sorted_desc(rows) {
-            if let Some(path) = self.photos.path_at(row) {
-                attempts
-                    .entry(path.clone())
-                    .or_insert_with(|| match fileops::delete(path) {
-                        Ok(()) => true,
-                        Err(error) => {
-                            failure_count += 1;
-                            failed.get_or_insert(error);
-                            false
-                        }
-                    });
-            }
+        let undo = self.capture_playlist_edit();
+        if self.photos.remove_rows(rows) != 0 {
+            self.commit_playlist_edit(undo);
+            self.load_current();
         }
-        self.photos
-            .remove_matching(|path| attempts.get(path) == Some(&true));
-        self.load_current();
-        failed.map(|error| {
-            format!(
-                "Could not recycle {failure_count} of {} files. {error}",
-                attempts.len()
-            )
-        })
-    }
-
-    /// Moves the shown file into the folder of the `MoveToFolder` setting, and drops its entry.
-    pub fn move_current_to_target(&mut self) -> Result<PathBuf, String> {
-        if self.knobs.move_to.as_os_str().is_empty() {
-            return Err(String::from(
-                "No 'Move to' folder is set. Open the settings (S) and pick one.",
-            ));
-        }
-        let path = self.photos.current().cloned().ok_or("No image selected")?;
-        let target = fileops::move_to(&path, &self.knobs.move_to)?;
-        self.photos.remove_matching(|entry| entry == path);
-        self.load_current();
-        self.message = Some(format!("Moved to {}", target.display()));
-        Ok(target)
-    }
-
-    /// Renames the image for which the prompt was opened.
-    pub fn apply_pending(&mut self, text: &str) -> Result<PathBuf, String> {
-        let path = self.pending.as_ref().ok_or("No rename is open")?;
-        if self.navigation_pending || self.load_pending || self.photos.current() != Some(path) {
-            return Err("Image selection changed. Open the file command again.".into());
-        }
-        let target = fileops::rename(path, text)?;
-        self.photos.replace_path(path, &target);
-
-        self.pending = None;
-        self.message = None;
-        Ok(target)
     }
 }
+
+mod files;

@@ -3,89 +3,193 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::MetadataExt;
 use windows::core::PCWSTR;
 use windows::Win32::UI::Shell::StrCmpLogicalW;
+
+#[cfg(test)]
+mod tests;
+
+/// A fatal folder-scan failure: the directory whose enumeration failed and the OS error.
+pub(crate) struct FolderScanError {
+    pub folder: PathBuf,
+    pub error: std::io::Error,
+}
+
+impl std::fmt::Display for FolderScanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.folder.display(), self.error)
+    }
+}
+
 pub fn collect(
     dir: &Path,
     include_hidden: bool,
     recurse: bool,
     formats: &[String],
 ) -> Vec<PathBuf> {
+    collect_reporting(dir, include_hidden, recurse, formats, &|| true, &mut |_| {}).0
+}
+
+pub(crate) fn collect_reporting(
+    dir: &Path,
+    include_hidden: bool,
+    recurse: bool,
+    formats: &[String],
+    active: &impl Fn() -> bool,
+    found: &mut dyn FnMut(&Path),
+) -> (Vec<PathBuf>, Option<FolderScanError>) {
     let mut files = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
+    let result = visit_folder(
+        dir,
+        include_hidden,
+        recurse,
+        formats,
+        active,
+        &mut |path, _| {
+            found(&path);
+            files.push(path);
+        },
+    );
+    if active() {
+        sort_names(&mut files, false, None);
+    }
+    (files, result.err())
+}
 
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
+pub(crate) fn visit_folder(
+    dir: &Path,
+    include_hidden: bool,
+    recurse: bool,
+    formats: &[String],
+    active: &dyn Fn() -> bool,
+    found: &mut dyn FnMut(PathBuf, FileFacts),
+) -> Result<(), FolderScanError> {
+    let root = fs::read_dir(dir).map_err(|error| FolderScanError {
+        folder: dir.to_path_buf(),
+        error,
+    })?;
+    let mut stack: Vec<_> = vec![(dir.to_path_buf(), root)];
+    while active() {
+        let Some((folder, entries)) = stack.last_mut() else {
+            break;
         };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            // The enumeration already knows the type, so a plain entry costs no stat.
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            if kind.is_dir() {
-                // Preserve the exclusion for every directory reparse point.
-                if recurse
-                    && entry.metadata().is_ok_and(|metadata| {
-                        !is_reparse_point(&metadata) && !skip_attributes(&metadata, include_hidden)
-                    })
-                {
-                    stack.push(path);
-                }
-                continue;
+        match entries.next() {
+            None => {
+                stack.pop();
             }
-
-            if !is_image_file(&path, formats) {
-                continue;
+            Some(Err(error)) => {
+                return Err(FolderScanError {
+                    folder: folder.clone(),
+                    error,
+                });
             }
-            let metadata = entry.metadata().and_then(|metadata| {
-                if is_reparse_point(&metadata) {
-                    path.metadata()
-                } else {
-                    Ok(metadata)
+            Some(Ok(entry)) => {
+                let path = entry.path();
+                // The enumeration already knows the type, so a plain entry costs no stat.
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                if kind.is_dir() {
+                    // Preserve the exclusion for every directory reparse point.
+                    if recurse
+                        && entry.metadata().is_ok_and(|metadata| {
+                            !is_reparse_point(&metadata)
+                                && !skip_attributes(&metadata, include_hidden)
+                        })
+                    {
+                        match fs::read_dir(&path) {
+                            Ok(entries) => stack.push((path, entries)),
+                            Err(error) => {
+                                return Err(FolderScanError {
+                                    folder: path,
+                                    error,
+                                })
+                            }
+                        }
+                    }
+                    continue;
                 }
-            });
-            if metadata.is_ok_and(|metadata| {
-                metadata.is_file() && !skip_attributes(&metadata, include_hidden)
-            }) {
-                files.push(path);
+
+                if !is_image_file(&path, formats) {
+                    continue;
+                }
+                let metadata = entry.metadata().and_then(|metadata| {
+                    if is_reparse_point(&metadata) {
+                        path.metadata()
+                    } else {
+                        Ok(metadata)
+                    }
+                });
+                if let Ok(metadata) = metadata {
+                    if metadata.is_file() && !skip_attributes(&metadata, include_hidden) {
+                        found(
+                            path,
+                            FileFacts {
+                                size: metadata.len(),
+                                modified: metadata.last_write_time(),
+                            },
+                        );
+                    }
+                }
             }
         }
     }
-
-    sort_names(&mut files, false, None);
-    files
+    Ok(())
 }
 
-pub(super) fn sort_names(
+pub(crate) fn sort_names(
     paths: &mut Vec<PathBuf>,
     descending: bool,
     selected: Option<usize>,
 ) -> Option<usize> {
-    let mut keyed: Vec<_> = paths
-        .drain(..)
-        .enumerate()
-        .map(|(index, path)| {
-            let name = path.file_name().unwrap_or(path.as_os_str());
-            (
-                name.encode_wide().chain([0]).collect::<Vec<_>>(),
-                index,
-                path,
-            )
-        })
-        .collect();
-    keyed.sort_by(|(a, ..), (b, ..)| {
-        let order = unsafe { StrCmpLogicalW(PCWSTR(a.as_ptr()), PCWSTR(b.as_ptr())) }.cmp(&0);
-        if descending {
-            order.reverse()
-        } else {
-            order
-        }
-    });
-    let selected =
-        selected.and_then(|selected| keyed.iter().position(|(_, index, _)| *index == selected));
-    paths.extend(keyed.into_iter().map(|(_, _, path)| path));
+    let mut keys = NameOrder::default();
+    keys.starts.reserve(paths.len());
+    for path in paths.iter() {
+        keys.push(path);
+    }
+    let order = keys.sorted(descending);
+    let selected = selected.and_then(|selected| order.iter().position(|&index| index == selected));
+    let mut slots: Vec<Option<PathBuf>> = paths.drain(..).map(Some).collect();
+    paths.extend(
+        order
+            .into_iter()
+            .map(|index| slots[index].take().expect("each occurrence moves once")),
+    );
     selected
+}
+
+/// Stores only the leaf names while discovery streams full paths to the viewer.
+#[derive(Default)]
+pub(crate) struct NameOrder {
+    arena: Vec<u16>,
+    starts: Vec<usize>,
+}
+
+impl NameOrder {
+    pub(crate) fn push(&mut self, path: &Path) {
+        self.starts.push(self.arena.len());
+        self.arena
+            .extend(path.file_name().unwrap_or(path.as_os_str()).encode_wide());
+        self.arena.push(0);
+    }
+
+    pub(crate) fn sorted(self, descending: bool) -> Vec<usize> {
+        let mut order: Vec<_> = (0..self.starts.len()).collect();
+        order.sort_unstable_by(|&a, &b| {
+            let compared = unsafe {
+                StrCmpLogicalW(
+                    PCWSTR(self.arena[self.starts[a]..].as_ptr()),
+                    PCWSTR(self.arena[self.starts[b]..].as_ptr()),
+                )
+            }
+            .cmp(&0);
+            let compared = if descending {
+                compared.reverse()
+            } else {
+                compared
+            };
+            compared.then_with(|| a.cmp(&b))
+        });
+        order
+    }
 }
 
 fn is_reparse_point(metadata: &fs::Metadata) -> bool {

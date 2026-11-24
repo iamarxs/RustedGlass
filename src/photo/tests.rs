@@ -1,4 +1,26 @@
 use super::*;
+
+#[test]
+fn a_case_variant_windows_path_selects_and_deduplicates_the_same_file() {
+    let directory = crate::test_path("case-variant-paths");
+    fs::create_dir_all(&directory).unwrap();
+    let first = directory.join("a.png");
+    let actual = directory.join("zLast.png");
+    let alias = directory.join("ZLAST.PNG");
+    fs::write(&first, b"first").unwrap();
+    fs::write(&actual, b"last").unwrap();
+
+    if alias.is_file() {
+        let mut photos = PhotoList::from_path(&alias, false, false, image_formats());
+        assert_eq!(photos.current(), Some(&actual));
+        photos.extend_files(vec![alias]);
+        assert_eq!(photos.remove_duplicates(), 1);
+        assert_eq!(photos.current(), Some(&actual));
+    }
+    fs::remove_file(first).unwrap();
+    fs::remove_file(actual).unwrap();
+    fs::remove_dir(directory).unwrap();
+}
 use crate::w32::file_name;
 
 #[test]
@@ -20,6 +42,66 @@ fn names_sort_the_way_explorer_sorts_them() {
         names,
         vec!["a.png", "img2.png", "img2.png.bak", "img10.png"]
     );
+
+    sort_names(&mut paths, true, None);
+    let names: Vec<_> = paths.iter().map(|path| file_name(path)).collect();
+    assert_eq!(
+        names,
+        vec!["img10.png", "img2.png.bak", "img2.png", "a.png"]
+    );
+}
+
+#[test]
+fn equal_leaf_names_keep_their_occurrence_order_in_both_directions() {
+    let mut paths = ["dir-b/one.png", "dir-a/one.png", "two.png"]
+        .map(PathBuf::from)
+        .to_vec();
+
+    sort_names(&mut paths, false, None);
+    assert_eq!(
+        paths,
+        ["dir-b/one.png", "dir-a/one.png", "two.png"]
+            .map(PathBuf::from)
+            .to_vec(),
+        "equal names are a stable tie"
+    );
+
+    sort_names(&mut paths, true, None);
+    assert_eq!(
+        paths,
+        ["two.png", "dir-b/one.png", "dir-a/one.png"]
+            .map(PathBuf::from)
+            .to_vec(),
+        "descending reverses names, not equal occurrences"
+    );
+}
+
+#[test]
+fn sorting_returns_the_selected_occurrence_of_a_duplicate_name() {
+    let mut paths = ["x/a.png", "b2.png", "y/a.png", "b10.png"]
+        .map(PathBuf::from)
+        .to_vec();
+
+    assert_eq!(sort_names(&mut paths, false, Some(2)), Some(1));
+    assert_eq!(
+        paths,
+        ["x/a.png", "y/a.png", "b2.png", "b10.png"]
+            .map(PathBuf::from)
+            .to_vec()
+    );
+    assert_eq!(paths[1], PathBuf::from("y/a.png"), "the second a.png");
+
+    let mut paths = ["x/a.png", "b2.png", "y/a.png", "b10.png"]
+        .map(PathBuf::from)
+        .to_vec();
+    assert_eq!(sort_names(&mut paths, true, Some(2)), Some(3));
+    assert_eq!(
+        paths,
+        ["b10.png", "b2.png", "x/a.png", "y/a.png"]
+            .map(PathBuf::from)
+            .to_vec()
+    );
+    assert_eq!(sort_names(&mut paths, false, Some(99)), None);
 }
 
 #[test]
@@ -271,7 +353,8 @@ fn only_row_changes_move_the_rows_token() {
     let appended = photos.rows_token();
     assert_ne!(appended, built, "an append is a row change");
 
-    photos.replace_path(Path::new("a.png"), Path::new("z.png"));
+    let matching = photos.rows_for_path(Path::new("a.png"));
+    photos.replace_rows(&matching, Path::new("z.png"));
     let renamed = photos.rows_token();
     assert_ne!(renamed, appended, "a renamed path is a row change");
     assert_eq!(
@@ -283,7 +366,8 @@ fn only_row_changes_move_the_rows_token() {
     );
     assert_eq!(photos.index, 2, "the shown row does not move");
 
-    photos.replace_path(Path::new("missing.png"), Path::new("other.png"));
+    let matching = photos.rows_for_path(Path::new("missing.png"));
+    photos.replace_rows(&matching, Path::new("other.png"));
     assert_eq!(
         photos.rows_token(),
         renamed,

@@ -64,7 +64,7 @@ const BUTTON_WIDTH: i32 = 130;
 const BUTTON_HEIGHT: i32 = 26;
 pub const PANEL_COLOR: COLORREF = COLORREF(0x001A_1A1A);
 pub const TEXT_COLOR: COLORREF = COLORREF(0x00DD_DDDD);
-const TEXT_HEADING: COLORREF = COLORREF(0x008C_CFFF);
+pub(crate) const TEXT_HEADING: COLORREF = COLORREF(0x008C_CFFF);
 /// The id of the panel's one button ("Save & Close", "Apply", "Close"), whatever panel is open.
 pub const APPLY_ID: usize = 800;
 /// The "Pick…" button of a path row is this id plus the row's index.
@@ -257,7 +257,9 @@ pub fn apply_to_config(dialog: &Dialog, config: &mut Config, only: Option<usize>
 mod tests;
 
 mod picker;
-pub use picker::{pick_files, pick_folder, pick_image_destination, pick_one_file, pick_save_file};
+pub use picker::{
+    pick_files, pick_folder, pick_image_destination, pick_playlist, pick_playlist_destination,
+};
 
 mod layout;
 pub use layout::{open, resize_shortcuts};

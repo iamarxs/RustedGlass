@@ -25,6 +25,14 @@ pub struct Lane<T> {
 }
 
 impl<T> Lane<T> {
+    pub fn is_open(&self) -> bool {
+        self.open.load(Ordering::Acquire)
+    }
+
+    pub fn has_waiting(&self) -> bool {
+        !self.items.lock().unwrap().is_empty()
+    }
+
     pub fn new(capacity: usize) -> Lane<T> {
         Lane {
             items: Mutex::new(VecDeque::new()),

@@ -1,5 +1,5 @@
 use super::*;
-use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
+use windows::Win32::UI::Input::KeyboardAndMouse::{VIRTUAL_KEY, VK_ESCAPE, VK_F1};
 pub(crate) unsafe extern "system" fn prompt_key(
     hwnd: HWND,
     msg: u32,
@@ -17,7 +17,7 @@ pub(crate) unsafe extern "system" fn prompt_key(
         );
         return LRESULT(0);
     }
-    if msg == WM_KEYDOWN && wparam.0 == VK_ESCAPE.0 as usize {
+    if msg == WM_KEYDOWN && matches!(VIRTUAL_KEY(wparam.0 as u16), VK_ESCAPE | VK_F1) {
         let _ = PostMessageW(
             Some(HWND(parent as *mut core::ffi::c_void)),
             msg,

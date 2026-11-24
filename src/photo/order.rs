@@ -1,4 +1,102 @@
+use super::columns::{Column, Details, SortKey};
 use super::*;
+use std::collections::HashMap;
+
+impl PhotoList {
+    /// Sorts the visible rows by a playlist column, keeping the shown occurrence.
+    pub(crate) fn sort_by_column(
+        &mut self,
+        column: Column,
+        descending: bool,
+        details: &HashMap<PathBuf, Details>,
+    ) {
+        self.sort_by_column_with(column, descending, |path| details.get(path));
+    }
+
+    pub(crate) fn sort_by_column_with<'a>(
+        &mut self,
+        column: Column,
+        descending: bool,
+        mut details: impl FnMut(&Path) -> Option<&'a Details>,
+    ) {
+        self.reset_random_pass();
+        let selected = self.file_index(self.index);
+        let mut visible_position = Vec::new();
+        if !self.order.is_empty() {
+            visible_position.resize(self.len(), 0);
+            for (position, &index) in self.order.iter().enumerate() {
+                visible_position[index] = position;
+            }
+        }
+        let mut keyed: Vec<(SortKey, usize, PathBuf)> = self
+            .files
+            .drain(..)
+            .enumerate()
+            .map(|(index, path)| (column.sort_key(&path, details(&path)), index, path))
+            .collect();
+        // Stable, so equal keys keep their order in both directions.
+        keyed.sort_by(|(a, left, _), (b, right, _)| {
+            a.compare(b, descending).then_with(|| {
+                if visible_position.is_empty() {
+                    left.cmp(right)
+                } else {
+                    visible_position[*left].cmp(&visible_position[*right])
+                }
+            })
+        });
+        self.order.clear();
+        self.index = selected
+            .and_then(|selected| keyed.iter().position(|(_, index, _)| *index == selected))
+            .unwrap_or(0);
+        self.files = keyed.into_iter().map(|(_, _, path)| path).collect();
+        self.rows_changed();
+    }
+
+    /// The synchronous test entry point. The viewer resolves keys on its preparation lane.
+    #[cfg(test)]
+    pub(crate) fn remove_duplicates(&mut self) -> usize {
+        let rows = duplicate_rows(self.visible_rows().cloned(), &|| true);
+        self.apply_duplicate_rows(&rows)
+    }
+
+    /// The worker's row indices belong to the current visible ordering. Move selection
+    /// to the kept occurrence before removal, so the preview can stay on the same file.
+    pub(crate) fn apply_duplicate_rows(&mut self, duplicates: &[(usize, usize)]) -> usize {
+        if let Ok(position) = duplicates.binary_search_by_key(&self.index, |(row, _)| *row) {
+            self.index = duplicates[position].1;
+        }
+        let rows: Vec<_> = duplicates.iter().map(|&(row, _)| row).collect();
+        self.remove_rows(&rows)
+    }
+}
+
+/// For each later occurrence, returns its row and the first row for that path.
+pub(crate) fn duplicate_rows(
+    paths: impl IntoIterator<Item = PathBuf>,
+    active: &dyn Fn() -> bool,
+) -> Vec<(usize, usize)> {
+    use std::collections::hash_map::Entry;
+
+    let mut identities = HashMap::new();
+    let mut parents = super::path_identity::PathIdentities::default();
+    let mut first_rows = HashMap::new();
+    let mut duplicates = Vec::new();
+    for (row, path) in paths.into_iter().enumerate() {
+        if !active() {
+            break;
+        }
+        let identity = identities
+            .entry(path)
+            .or_insert_with_key(|path| parents.resolve(path));
+        match first_rows.entry(identity.clone()) {
+            Entry::Occupied(first) => duplicates.push((row, *first.get())),
+            Entry::Vacant(first) => {
+                first.insert(row);
+            }
+        }
+    }
+    duplicates
+}
 
 impl PhotoList {
     /// Move a visible row while keeping the selected occurrence of an image.
@@ -33,6 +131,7 @@ impl PhotoList {
         self.rows_changed();
     }
 
+    #[cfg(test)]
     pub fn remove_matching(&mut self, mut matches: impl FnMut(&Path) -> bool) {
         let rows: Vec<usize> = (0..self.len())
             .filter(|&row| self.path_at(row).is_some_and(|path| matches(path)))

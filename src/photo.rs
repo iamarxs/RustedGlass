@@ -54,6 +54,7 @@ pub struct PhotoList {
     pub order: Vec<usize>,
     random_pass: Option<Vec<usize>>,
     rows_token: u64,
+    layout_token: u64,
 }
 
 impl PhotoList {
@@ -66,6 +67,7 @@ impl PhotoList {
             order: Vec::new(),
             random_pass: None,
             rows_token: next_rows_token(),
+            layout_token: next_rows_token(),
         }
     }
 
@@ -87,7 +89,7 @@ impl PhotoList {
         let wanted = if path.is_file() { Some(path) } else { None };
 
         let index = match wanted {
-            Some(file) => files.iter().position(|f| f == file).unwrap_or(0),
+            Some(file) => find_opened_file(&files, file).unwrap_or(0),
             None => 0,
         };
 
@@ -98,6 +100,7 @@ impl PhotoList {
             order: Vec::new(),
             random_pass: None,
             rows_token: next_rows_token(),
+            layout_token: next_rows_token(),
         }
     }
 
@@ -106,8 +109,13 @@ impl PhotoList {
         self.rows_token
     }
 
+    pub(crate) fn layout_token(&self) -> u64 {
+        self.layout_token
+    }
+
     fn rows_changed(&mut self) {
         self.rows_token = next_rows_token();
+        self.layout_token = self.rows_token;
     }
 
     pub fn len(&self) -> usize {
@@ -138,6 +146,41 @@ impl PhotoList {
 
     pub fn path_at(&self, position: usize) -> Option<&PathBuf> {
         self.at(position).map(|i| &self.files[i])
+    }
+
+    /// Folder scans keep discovery order in the backing vector even when the list is sorted.
+    pub(crate) fn metadata_path_at(&self, position: usize) -> Option<&PathBuf> {
+        self.files.get(position)
+    }
+
+    pub(crate) fn finish_folder_order(
+        &mut self,
+        start: usize,
+        order: Vec<usize>,
+        selected: Option<usize>,
+    ) {
+        debug_assert_eq!(start + order.len(), self.len());
+        let selected = selected.or_else(|| self.file_index(self.index));
+        if start == 0 {
+            if order.iter().copied().eq(0..self.len()) {
+                self.order.clear();
+            } else {
+                self.order = order;
+            }
+        } else {
+            if self.order.is_empty() {
+                self.order.extend(0..start);
+            } else {
+                self.order.truncate(start);
+            }
+            self.order
+                .extend(order.into_iter().map(|offset| start + offset));
+        }
+        self.index = selected
+            .and_then(|index| self.position_of_file(index))
+            .unwrap_or(0);
+        self.reset_random_pass();
+        self.rows_changed();
     }
 
     /// The entries in the order browsing and the playlist menu use.
@@ -194,7 +237,7 @@ impl PhotoList {
         let count = added.len();
         if count != 0 {
             self.reset_random_pass();
-            self.rows_changed();
+            self.rows_token = next_rows_token();
         }
         if !self.order.is_empty() {
             self.order
@@ -213,6 +256,7 @@ impl PhotoList {
             order: Vec::new(),
             random_pass: None,
             rows_token: next_rows_token(),
+            layout_token: next_rows_token(),
         };
         list.add_files(paths);
         list.sort_by_name(false);
@@ -251,13 +295,16 @@ impl PhotoList {
         self.remove_at(self.index)
     }
 
-    /// Renames every row holding `previous`, keeping the order and the shown row.
-    pub(crate) fn replace_path(&mut self, previous: &Path, target: &Path) {
+    /// Renames the resolved rows, keeping their order and the shown occurrence.
+    pub(crate) fn replace_rows(&mut self, rows: &[usize], target: &Path) {
         let mut replaced = false;
-        for entry in &mut self.files {
-            if entry == previous {
-                *entry = target.to_path_buf();
-                replaced = true;
+        for &row in rows {
+            if let Some(index) = self.at(row) {
+                let entry = &mut self.files[index];
+                if entry != target {
+                    *entry = target.to_path_buf();
+                    replaced = true;
+                }
             }
         }
         if replaced {
@@ -297,6 +344,22 @@ impl PhotoList {
     }
 }
 
+pub(crate) fn find_opened_file(files: &[PathBuf], path: &Path) -> Option<usize> {
+    files.iter().position(|file| file == path).or_else(|| {
+        let actual = path.canonicalize().ok()?;
+        // Compare normalized absolute paths only for matching file names. On a
+        // case-sensitive volume, canonicalization keeps distinct paths distinct.
+        let name = path.file_name()?.to_string_lossy().to_lowercase();
+        files.iter().position(|file| {
+            file.file_name()
+                .is_some_and(|candidate| candidate.to_string_lossy().to_lowercase() == name)
+                && file
+                    .canonicalize()
+                    .is_ok_and(|candidate| candidate == actual)
+        })
+    })
+}
+
 /// Lists image files in `dir`, optionally including hidden entries and subfolders.
 #[cfg(test)]
 mod format_tests;
@@ -305,7 +368,12 @@ mod tests;
 
 mod folder;
 pub use folder::collect;
-use folder::sort_names;
+pub(crate) use folder::{collect_reporting, sort_names, visit_folder, FolderScanError, NameOrder};
 
+mod columns;
 mod order;
+pub(crate) use order::duplicate_rows;
+mod path_identity;
+pub(crate) use path_identity::path_identity;
 mod random;
+pub(crate) use columns::{Column, Details, FileFacts};

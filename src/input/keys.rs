@@ -19,7 +19,7 @@ pub const SHORTCUT_GROUPS: &[(&str, &[Shortcut])] = &[
         "Zoom and image",
         &[
             ("+ / −", "Zoom in / out"),
-            ("Ctrl + Wheel", "Zoom in / out"),
+            ("Ctrl + Wheel", "Zoom in / out around the pointer"),
             ("Z", "Enter exact zoom"),
             ("0 / 5", "Fit image to window"),
             ("1 / 2", "Auto zoom / lock zoom ratio"),
@@ -41,11 +41,13 @@ pub const SHORTCUT_GROUPS: &[(&str, &[Shortcut])] = &[
         "Playlist",
         &[
             ("L", "Show or hide playlist"),
+            ("PgUp / PgDn", "Browse one page of playlist rows"),
             ("Ctrl + O", "Open playlist"),
             ("Ctrl + S", "Save playlist"),
             ("A", "Add images"),
             ("Shift + A", "Add folder"),
             ("Del", "Remove image or selected rows from playlist"),
+            ("Ctrl + Z", "Undo the last playlist change (remove, duplicates, shuffle)"),
         ],
     ),
     (
@@ -55,6 +57,7 @@ pub const SHORTCUT_GROUPS: &[(&str, &[Shortcut])] = &[
             ("M", "Quick-move image"),
             ("F2", "Rename image"),
             ("C", "Save as"),
+            ("Ctrl + Shift + C", "Copy file path"),
             ("E", "Show image in Explorer"),
         ],
     ),
@@ -71,7 +74,7 @@ pub const SHORTCUT_GROUPS: &[(&str, &[Shortcut])] = &[
             ("S / Ctrl + P", "Open Settings"),
             (
                 "Right-click",
-                "Open context menu. In the playlist, use Sort by to reorder rows",
+                "Open context menu. In the playlist, choose Shuffle rows to randomize the row order",
             ),
             ("F1", "Show or hide keyboard shortcuts"),
             (
@@ -120,6 +123,16 @@ pub fn on_key(vk: u32, ctrl: bool, shift: bool) -> Option<Action> {
         VK_SPACE => Action::Next,
         VK_HOME => Action::First,
         VK_END => Action::Last,
+        VK_PRIOR | VK_NEXT => {
+            if state::read_state(|state| state.playlist_visible) != Some(true) {
+                return None;
+            }
+            if key == VK_PRIOR {
+                Action::PageUp
+            } else {
+                Action::PageDown
+            }
+        }
         VK_ESCAPE => return Some(escape()),
         VK_F1 => Action::Shortcuts,
         VK_F2 => Action::Rename,
@@ -141,6 +154,8 @@ pub fn on_key(vk: u32, ctrl: bool, shift: bool) -> Option<Action> {
             '0' if !ctrl => Action::FitOriginal,
             '+' | '=' if !ctrl => Action::ZoomIn,
             '-' | '_' if !ctrl => Action::ZoomOut,
+            // Ctrl+Shift+Z stays unbound: only plain Ctrl+Z is documented.
+            'z' if ctrl && !shift => Action::UndoPlaylist,
             'z' if !ctrl => Action::ExactZoom,
             digit @ '1'..='6' if !ctrl => Action::ZoomMode(digit.to_digit(10)? as usize - 1),
             'r' if !ctrl => Action::Rotate,
@@ -156,6 +171,7 @@ pub fn on_key(vk: u32, ctrl: bool, shift: bool) -> Option<Action> {
             'a' if ctrl => Action::RandomOrder,
             'a' => Action::AddFiles,
             'm' if !ctrl => Action::MoveToTarget,
+            'c' if ctrl && shift => Action::CopyFilePath,
             'c' if !ctrl => Action::SaveAs,
             'e' if !ctrl => Action::ShowInExplorer,
             'i' if !ctrl => Action::ImageInfo,
@@ -258,15 +274,20 @@ mod tests {
     fn ctrl_suppresses_unmapped_plain_letters() {
         // Ctrl+C and Ctrl+M are unbound: C stays Save as, M stays Quick move.
         assert_eq!(on_key(b'C' as u32, true, false), None);
+        assert_eq!(on_key(b'C' as u32, true, true), Some(Action::CopyFilePath));
         assert_eq!(on_key(b'M' as u32, true, false), None);
         assert_eq!(on_key(b'C' as u32, false, false), Some(Action::SaveAs));
         assert_eq!(
             on_key(b'M' as u32, false, false),
             Some(Action::MoveToTarget)
         );
-        for vk in *b"ZRTLFEI03" {
+        for vk in *b"RTLFEI03" {
             assert!(on_key(vk as u32, true, false).is_none());
         }
+        // Z keeps exact zoom unmodified; only Ctrl+Z is the undo.
+        assert_eq!(on_key(b'Z' as u32, false, false), Some(Action::ExactZoom));
+        assert_eq!(on_key(b'Z' as u32, true, false), Some(Action::UndoPlaylist));
+        assert_eq!(on_key(b'Z' as u32, true, true), None);
         // The explicit Ctrl/Shift mappings still dispatch.
         assert_eq!(on_key(b'A' as u32, true, false), Some(Action::RandomOrder));
         assert_eq!(on_key(b'A' as u32, false, true), Some(Action::AddFolder));

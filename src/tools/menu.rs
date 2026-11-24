@@ -1,9 +1,11 @@
 use super::*;
 
-pub fn show_menu(hwnd: HWND) -> Option<Action> {
+/// `row_commands` is whether the playlist menu was opened on explicit rows, which the commands
+/// that act on files need.
+pub fn show_menu(hwnd: HWND, row_commands: bool) -> Option<Action> {
     let menu = crate::state::with_state(|state| {
         if state.playlist_visible {
-            playlist_menu(state)
+            playlist_menu(state, row_commands)
         } else {
             viewer_menu(state)
         }
@@ -69,8 +71,18 @@ fn viewer_menu(state: &State) -> Option<ContextMenu> {
     let files = menu.group("Files")?;
     menu.add(files, OpenFile, "Open images…\tO", true, false);
     menu.add(files, OpenFolder, "Open folder…\tF", true, false);
+    if state.can_retry_folder_scan() {
+        menu.add(files, RetryFolderScan, "Retry folder scan", true, false);
+    }
     menu.add(files, SaveAs, "Save as…\tC", shown, false);
     menu.add(files, Rename, "Rename image…\tF2", shown, false);
+    menu.add(
+        files,
+        CopyFilePath,
+        "Copy file path\tCtrl+Shift+C",
+        shown,
+        false,
+    );
     menu.add(
         files,
         MoveToTarget,
@@ -176,14 +188,18 @@ fn viewer_menu(state: &State) -> Option<ContextMenu> {
     Some(menu)
 }
 
-fn playlist_menu(state: &State) -> Option<ContextMenu> {
+fn playlist_menu(state: &State, row_commands: bool) -> Option<ContextMenu> {
     use Action::*;
     let mut menu = ContextMenu::new()?;
     let root = menu.root();
     let shown = !state.photos.is_empty();
+    let rows = shown && row_commands;
 
     menu.add(root, AddFiles, "Add images…\tA", true, false);
     menu.add(root, AddFolder, "Add folder…\tShift+A", true, false);
+    if state.can_retry_folder_scan() {
+        menu.add(root, RetryFolderScan, "Retry folder scan", true, false);
+    }
     menu.add(root, OpenPlaylist, "Open playlist…\tCtrl+O", true, false);
     menu.add(root, SavePlaylist, "Save playlist…\tCtrl+S", true, false);
     menu.line(root);
@@ -191,27 +207,53 @@ fn playlist_menu(state: &State) -> Option<ContextMenu> {
         root,
         RemoveSelected,
         "Remove selected from playlist\tDel",
-        shown,
+        rows,
+        false,
+    );
+    menu.add(
+        root,
+        RemoveDuplicates,
+        "Remove duplicates",
+        state.photos.len() > 1,
         false,
     );
     menu.add(
         root,
         DeleteSelected,
         "Move selected to Recycle Bin\tCtrl+Del",
-        shown,
+        rows,
         false,
     );
     menu.add(
         root,
         ShowFolder,
         "Show selected image in Explorer",
-        shown,
+        rows,
         false,
     );
-    let sort = menu.group("Sort by")?;
-    menu.add(sort, SortByName(false), "Name ascending", shown, false);
-    menu.add(sort, SortByName(true), "Name descending", shown, false);
-    menu.add(sort, ShufflePlaylist, "Shuffle rows", shown, false);
+    menu.add(
+        root,
+        CopyFilePath,
+        "Copy file path\tCtrl+Shift+C",
+        rows,
+        false,
+    );
+    menu.add(root, ShufflePlaylist, "Shuffle rows", shown, false);
+    let columns = menu.group("Columns")?;
+    let visible = crate::photo::Column::ALL
+        .into_iter()
+        .filter(|&column| crate::playlist::column_visible(column))
+        .count();
+    for column in crate::photo::Column::ALL {
+        let checked = crate::playlist::column_visible(column);
+        menu.add(
+            columns,
+            TogglePlaylistColumn(column),
+            column.title(),
+            !checked || visible > 1,
+            checked,
+        );
+    }
     menu.line(root);
     menu.add(
         root,

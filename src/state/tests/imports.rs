@@ -266,7 +266,7 @@ fn dropping_playlist_files_appends_or_replaces_like_other_drops() {
         std::fs::write(file, b"P6\n1 1\n255\n\xff\x00\x00").unwrap();
     }
     let list1 = dir.join("one.rgpl");
-    let list2 = dir.join("two.rgpl");
+    let list2 = dir.join("two.rgplz");
     crate::rgpl::write_file(&list1, &[a.clone()]).unwrap();
     crate::rgpl::write_file(&list2, &[b.clone(), c.clone()]).unwrap();
 
@@ -367,18 +367,13 @@ fn bulk_delete_drops_every_occurrence_and_keeps_the_failed_rows() {
     std::fs::remove_dir(dir).unwrap();
 }
 
-/// Drains the import lane until it has been idle for a moment, so a result that is still
-/// on its thread is never mistaken for parity.
+/// Each parity case imports at least one row into a fresh viewer. Wait for its rows
+/// and first image instead of treating a briefly empty result queue as completion.
 fn settle(state: &mut State) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut idle = 0;
     while std::time::Instant::now() < deadline {
-        if state.poll_background() {
-            idle = 0;
-            continue;
-        }
-        idle += 1;
-        if idle >= 20 {
+        state.poll_background();
+        if !state.photos.is_empty() && !state.load_pending {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(1));

@@ -1,4 +1,36 @@
+use super::worker::OpenedOutcome;
 use super::*;
+
+#[test]
+fn the_scan_notice_expires_once_while_the_import_and_errors_remain() {
+    let mut state = State::interactive(crate::test_path("unused-config.json"), &[]);
+    let source = || Source::Batch {
+        paths: Vec::new(),
+        include_hidden: false,
+        recurse: false,
+    };
+    assert!(!state.show_import_notice());
+    assert!(state.submit_import(source(), true));
+    assert!(state.show_import_notice());
+    let old_tag = state.pending_import.unwrap();
+
+    state.import_notice_until = Some(Instant::now());
+    state.notice = Some("A separate error.".into());
+    assert!(state.poll_background_budget(0), "repaint without results");
+    assert!(state.importing(), "the import is still pending");
+    assert!(!state.show_import_notice());
+    assert_eq!(state.notice.as_deref(), Some("A separate error."));
+    assert!(!state.poll_background_budget(0), "expire only once");
+
+    assert!(state.submit_import(source(), true));
+    state.import_finished(old_tag);
+    assert!(state.show_import_notice(), "a new scan has its own notice");
+    state.import_finished(state.pending_import.unwrap());
+    assert!(
+        !state.show_import_notice(),
+        "completion hides it immediately"
+    );
+}
 
 fn still_decoded() -> crate::decode::Decoded {
     crate::decode::to_decoded(::image::RgbaImage::from_pixel(
@@ -90,6 +122,7 @@ fn a_stale_generation_cannot_touch_the_current_selection() {
         identity: None,
         outcome: OpenedOutcome::Still {
             image: still_decoded(),
+            eligible: true,
         },
     };
     assert!(!state.apply_event(stale), "an old reply is not work");
@@ -114,6 +147,7 @@ fn the_live_generation_is_associated_exactly_once() {
         identity: Some((11, std::time::SystemTime::UNIX_EPOCH)),
         outcome: OpenedOutcome::Still {
             image: still_decoded(),
+            eligible: true,
         },
     };
     assert!(state.apply_event(live));
@@ -125,6 +159,27 @@ fn the_live_generation_is_associated_exactly_once() {
 }
 
 #[test]
+fn a_decode_invalidated_by_the_worker_displays_without_seeding_the_cache() {
+    let path = crate::test_path("worker-invalidated-still.png");
+    std::fs::write(&path, b"changed while decoding").unwrap();
+    let mut state = State::new(crate::test_path("unused-config.json"), &[]);
+    state.photos.files = vec![path.clone()];
+    state.selection = 3;
+    state.load_pending = true;
+    assert!(state.apply_event(Event::Opened {
+        generation: 3,
+        identity: crate::cache::stat(&path),
+        outcome: OpenedOutcome::Still {
+            image: still_decoded(),
+            eligible: false,
+        },
+    }));
+    assert!(state.frame().is_some());
+    assert!(crate::cache::candidate(&path).is_none());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn only_the_latest_replacement_reaches_the_playlist() {
     let mut state = State::new(crate::test_path("unused-config.json"), &[]);
     state.replace_tag = 8;
@@ -132,12 +187,112 @@ fn only_the_latest_replacement_reaches_the_playlist() {
         tag: 7,
         rows: PreparedImport {
             files: vec![PathBuf::from("old.png")],
-            skipped: 0,
-            missing: 0,
+            ..PreparedImport::default()
         },
     };
     assert!(!state.apply_event(old), "an older replacement is not work");
     assert!(state.photos.is_empty(), "no old rows appear");
+}
+
+#[test]
+fn folder_preview_is_browsable_before_the_sorted_playlist_arrives() {
+    let mut state = State::new(crate::test_path("unused-config.json"), &[]);
+    state.replace_tag = 8;
+    state.pending_import = Some(8);
+    let early = crate::test_path("folder-preview-z.png");
+    let first = crate::test_path("folder-preview-a.png");
+    for (path, width) in [(&early, 7), (&first, 2)] {
+        ::image::RgbaImage::from_pixel(width, 1, ::image::Rgba([9, 8, 7, 255]))
+            .save(path)
+            .unwrap();
+    }
+    assert!(!state.apply_event(Event::ImportPreview {
+        tag: 7,
+        replacing: true,
+        files: vec![early.clone()],
+    }));
+    assert!(state.apply_event(Event::ImportPreview {
+        tag: 8,
+        replacing: true,
+        files: vec![early.clone()],
+    }));
+    assert_eq!(state.photos.current(), Some(&early));
+    assert_eq!(state.frame().unwrap().width, 7);
+    assert!(state.browsing_import_preview());
+    assert!(state.apply_event(Event::Replaced {
+        tag: 8,
+        rows: PreparedImport {
+            files: vec![first.clone(), early.clone()],
+            ..PreparedImport::default()
+        },
+    }));
+    assert_eq!(state.photos.len(), 2);
+    assert_eq!(state.photos.current(), Some(&first));
+    assert_eq!(state.frame().unwrap().width, 2);
+    assert!(!state.importing());
+    assert!(!state.browsing_import_preview());
+    std::fs::remove_file(early).unwrap();
+    std::fs::remove_file(first).unwrap();
+}
+
+#[test]
+fn an_appended_folder_replaces_provisional_rows_once() {
+    let mut state = State::new(crate::test_path("unused-config.json"), &[]);
+    let original = PathBuf::from("original.png");
+    let early = PathBuf::from("z.png");
+    let first = PathBuf::from("a.png");
+    state.photos.files = vec![original.clone()];
+    assert!(state.apply_event(Event::ImportPreview {
+        tag: 1,
+        replacing: false,
+        files: vec![early.clone()],
+    }));
+    assert_eq!(state.photos.files, [original.clone(), early.clone()]);
+    assert!(state.apply_event(Event::Appended {
+        tag: 1,
+        rows: PreparedImport {
+            files: vec![first.clone(), early.clone()],
+            ..PreparedImport::default()
+        },
+    }));
+    assert_eq!(state.photos.files, [original.clone(), first, early]);
+    assert_eq!(state.photos.current(), Some(&original));
+}
+
+#[test]
+fn streamed_folders_keep_discovery_order_for_metadata_and_the_selected_occurrence() {
+    let mut state = State::new(crate::test_path("unused-config.json"), &[]);
+    let same = PathBuf::from("z.png");
+    let first = PathBuf::from("a.png");
+    let facts = photo::FileFacts {
+        size: 20,
+        modified: 40,
+    };
+    state.replace_tag = 1;
+    state.pending_import = Some(1);
+    assert!(state.apply_event(Event::FolderRows {
+        tag: 1,
+        replacing: true,
+        rows: vec![(same.clone(), facts)],
+    }));
+    assert_eq!(state.photos.len(), 1);
+    assert!(state.apply_event(Event::FolderRows {
+        tag: 1,
+        replacing: true,
+        rows: vec![(first.clone(), facts), (same.clone(), facts)],
+    }));
+    state.photos.jump_to(2);
+    assert!(state.apply_event(Event::FolderFinished {
+        tag: 1,
+        order: vec![1, 0, 2],
+        seed: None,
+        failure: None,
+    }));
+    assert_eq!(state.photos.path_at(0), Some(&first));
+    assert_eq!(state.photos.metadata_path_at(0), Some(&same));
+    assert_eq!(state.photos.index, 2);
+    assert_eq!(state.photos.file_index(state.photos.index), Some(2));
+    assert!(!state.importing());
 }
 
 #[test]

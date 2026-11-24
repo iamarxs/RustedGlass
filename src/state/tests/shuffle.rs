@@ -54,7 +54,11 @@ fn a_shuffled_slideshow_without_looping_ends_after_one_pass() {
         .set("EnableRandomDisplayOrder", Value::Bool(true));
     state.config.set("EnableLoopSlideshow", Value::Bool(false));
     state.reload_knobs();
-    state.sort_by_name(true);
+    state.photos.sort_by_column(
+        crate::photo::Column::Name,
+        true,
+        &std::collections::HashMap::new(),
+    );
     assert!(
         state.knobs.random_order,
         "sorting is independent of playback"

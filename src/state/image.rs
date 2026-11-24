@@ -58,6 +58,24 @@ impl State {
             self.factor(area)
         };
         self.set_zoom_factor(base * by);
+        // Zooming out can leave the old pan outside the smaller image's limits.
+        let image = self.frame().map(|bitmap| (bitmap.width, bitmap.height));
+        if let Some(image) = image {
+            self.offset =
+                crate::render::clamped_offset(image, area, self.factor(area), self.offset);
+        }
+    }
+
+    /// Multiplies the zoom by `by` around `anchor`, a client point: the image point under it
+    /// stays where it is, as far as the pan limits of the new factor allow.
+    pub fn zoom_by_anchored(&mut self, area: (u32, u32), by: f64, anchor: (i32, i32)) {
+        let image = self.frame().map(|bitmap| (bitmap.width, bitmap.height));
+        let from = self.factor(area);
+        let to = (from * by).max(0.01);
+        self.set_zoom_factor(to);
+        if let Some(image) = image {
+            self.offset = crate::render::zoom_offset(image, area, from, to, self.offset, anchor);
+        }
     }
 
     pub fn finish_navigation(&mut self) {
@@ -128,8 +146,8 @@ impl State {
             self.clear_manual_zoom();
         }
 
-        // With the worker, the decode runs on its lane and the reply carries the pixels:
-        // the UI applies them when they arrive, keyed to this generation.
+        // No stat here: the cache candidate the lane receives is looked up purely
+        // in memory, and the lane stats the live file itself.
         if let Some(worker) = self.worker.as_ref() {
             let Some(path) = self.photos.current().cloned() else {
                 self.message = Some(
@@ -138,12 +156,7 @@ impl State {
                 );
                 return;
             };
-            if let Some((stat, bitmap)) = crate::cache::cached_with_stat(&path) {
-                self.file_size = Some(stat.0);
-                self.bitmap = Some(bitmap);
-                return;
-            }
-            match worker.open(path.clone()) {
+            match worker.open(path.clone(), crate::cache::candidate(&path)) {
                 Ok(generation) => {
                     self.selection = generation;
                     self.load_pending = true;

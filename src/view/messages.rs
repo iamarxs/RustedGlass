@@ -58,11 +58,28 @@ pub(super) unsafe extern "system" fn wndproc(
                             input::jump_to(hwnd, item.iItem as usize);
                         }
                         let _ = SetFocus(Some(hwnd));
+                    } else if header.code == LVN_COLUMNCLICK {
+                        // A header click sorts the rows by that column: descending first,
+                        // toggling when the same one is clicked again.
+                        let item = &*(lparam.0 as *const NMLISTVIEW);
+                        playlist::sort_column(item.iSubItem);
+                        let _ = SetFocus(Some(hwnd));
+                        refresh(hwnd);
+                        return LRESULT(0);
                     } else if header.code == LVN_BEGINDRAG {
                         let item = &*(lparam.0 as *const NMLISTVIEW);
                         playlist::begin_drag(header.hwndFrom, item.iItem);
                     } else if header.code == NM_RCLICK {
-                        let _ = PostMessageW(Some(hwnd), WM_RBUTTONUP, wparam, LPARAM(0));
+                        let item = &*(lparam.0 as *const NMITEMACTIVATE);
+                        let row = item.iItem.max(-1) as isize + 1;
+                        if let Some(token) = state::read_state(|state| state.photos.rows_token()) {
+                            let _ = PostMessageW(
+                                Some(hwnd),
+                                input::ROW_MENU,
+                                WPARAM(row as usize),
+                                LPARAM(token as isize),
+                            );
+                        }
                     } else if header.code == LVN_GETDISPINFOW {
                         playlist::display_info(lparam);
                     } else if header.code == LVN_ODFINDITEMW {
@@ -94,7 +111,7 @@ pub(super) unsafe extern "system" fn wndproc(
                     dialog::scroll_by(w32::wheel_delta(wparam));
                     refresh(hwnd);
                 } else if !input::panel_open() {
-                    input::on_wheel(hwnd, wparam);
+                    input::on_wheel(hwnd, wparam, lparam);
                 }
                 LRESULT(0)
             }
@@ -126,15 +143,24 @@ pub(super) unsafe extern "system" fn wndproc(
                 input::on_drag_end();
                 LRESULT(0)
             }
-            WM_RBUTTONUP => {
+            WM_RBUTTONUP | input::ROW_MENU => {
+                if message == input::ROW_MENU
+                    && state::read_state(|state| state.photos.rows_token() as isize)
+                        != Some(lparam.0)
+                {
+                    return LRESULT(0);
+                }
+                let row = (message == input::ROW_MENU)
+                    .then(|| wparam.0.checked_sub(1))
+                    .flatten();
                 if !input::panel_open() {
-                    input::show_menu(hwnd);
+                    input::show_menu(hwnd, row);
                 }
                 LRESULT(0)
             }
             WM_DROPFILES => {
                 let drop = HDROP(wparam.0 as *mut std::ffi::c_void);
-                input::on_drop(hwnd, drop);
+                input::on_drop(hwnd, drop, lparam.0 == 1);
                 DragFinish(drop);
                 LRESULT(0)
             }
@@ -206,7 +232,14 @@ pub(super) unsafe extern "system" fn wndproc(
                 }
                 LRESULT(0)
             }
-            state::BACKGROUND_READY => background::drain(hwnd),
+            state::BACKGROUND_READY => {
+                state::read_state(|state| {
+                    if let Some(worker) = &state.worker {
+                        worker.acknowledge_wake();
+                    }
+                });
+                background::drain(hwnd)
+            }
             WM_TIMER => {
                 match wparam.0 {
                     zoom_overlay::TIMER => {

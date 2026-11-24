@@ -210,8 +210,7 @@ pub fn read_user_file(path: &Path) -> Result<Option<Value>, String> {
         Err(error) => return Err(describe(&error)),
     };
     // one byte past the cap, so an oversized file is rejected, never silently truncated
-    let mut limited = file
-        .take(MAX_CONFIG_BYTES + 1);
+    let mut limited = file.take(MAX_CONFIG_BYTES + 1);
     let text = std::io::read_to_string(&mut limited).map_err(|error| describe(&error))?;
     if text.len() as u64 > MAX_CONFIG_BYTES {
         return Err(describe(&"is larger than the settings cap"));

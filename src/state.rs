@@ -27,6 +27,10 @@ pub fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
     })
 }
 
+pub fn read_state<R>(f: impl FnOnce(&State) -> R) -> Option<R> {
+    WINDOW_STATE.with(|cell| cell.try_borrow().ok()?.as_ref().map(f))
+}
+
 pub fn install(state: State) {
     WINDOW_STATE.with(|cell| *cell.borrow_mut() = Some(state));
 }
@@ -96,6 +100,8 @@ pub struct State {
     pub config: Config,
     pub knobs: Knobs,
     pub photos: PhotoList,
+    playlist_undo: Option<undo::PlaylistUndo>,
+    folder_retry: Option<background::FolderRetry>,
     pub bitmap: Option<Bitmap>,
     pub file_size: Option<u64>,
     pub animation: Option<decode::Animation>,
@@ -113,10 +119,18 @@ pub struct State {
     animated_selection: bool,
     /// The replacement to keep: results of older replacements are dropped.
     replace_tag: u64,
+    pending_import: Option<u64>,
+    import_notice_until: Option<std::time::Instant>,
+    /// Import tag and the first provisional row.
+    import_preview: Option<(u64, usize)>,
+    import_rows: Vec<PathBuf>,
+    remote_import: Option<std::sync::mpsc::SyncSender<bool>>,
     /// The next import preparation's caller tag.
     prep_tag: u64,
     /// The command-line image to select once its folder's rows are prepared.
     startup_select: Option<PathBuf>,
+    /// A directly opened image already shown as the provisional first row of its folder scan.
+    direct_seed: Option<PathBuf>,
     startup_slideshow: bool,
     /// The command-line or picked playlist whose rows are being loaded, for the report.
     open_playlist_path: Option<PathBuf>,
@@ -185,6 +199,8 @@ impl State {
             config,
             knobs,
             photos: PhotoList::empty(),
+            playlist_undo: None,
+            folder_retry: None,
             bitmap: None,
             file_size: None,
             animation: None,
@@ -194,8 +210,14 @@ impl State {
             frame_pending: false,
             animated_selection: false,
             replace_tag: 0,
+            pending_import: None,
+            import_notice_until: None,
+            import_preview: None,
+            import_rows: Vec::new(),
+            remote_import: None,
             prep_tag: 0,
             startup_select: None,
+            direct_seed: None,
             startup_slideshow: false,
             open_playlist_path: None,
             frame_revision: 0,
@@ -235,12 +257,19 @@ impl State {
         if let Some(arg) = target_path(args) {
             let absolute = std::path::absolute(arg).ok();
             let path = absolute.as_deref().unwrap_or_else(|| Path::new(arg));
-            state.start_maximized |= state.config.get_bool(crate::config::FILES_MAXIMIZED, false)
-                && path.is_file()
-                && (rgpl::is_playlist_file(path)
-                    || photo::is_image_file(path, &state.photos.formats));
+            let playlist = rgpl::is_playlist_file(path);
+            let image = photo::is_image_file(path, &state.photos.formats);
+            let maximize = state.config.get_bool(crate::config::FILES_MAXIMIZED, false);
+            let metadata = if !playlist || maximize {
+                path.metadata().ok()
+            } else {
+                None
+            };
+            let file = metadata.as_ref().is_some_and(std::fs::Metadata::is_file);
+            let directory = metadata.as_ref().is_some_and(std::fs::Metadata::is_dir);
+            state.start_maximized |= maximize && file && (playlist || image);
             if state.worker.is_some() {
-                if rgpl::is_playlist_file(path) {
+                if playlist {
                     if state.submit_import(
                         Source::PlaylistFile {
                             path: path.to_path_buf(),
@@ -250,8 +279,10 @@ impl State {
                         state.open_playlist_path = Some(path.to_path_buf());
                         prepared_on_lane = true;
                     }
-                } else if path.is_file() || path.is_dir() {
-                    let folder = if path.is_dir() {
+                } else if file && image {
+                    prepared_on_lane = state.open_direct_image(path);
+                } else if file || directory {
+                    let folder = if directory {
                         path.to_path_buf()
                     } else {
                         path.parent().map(Path::to_path_buf).unwrap_or_default()
@@ -260,20 +291,21 @@ impl State {
                         Source::Folder {
                             path: folder,
                             include_hidden: state.knobs.include_hidden,
-                            recurse: state.knobs.recurse && path.is_dir(),
+                            recurse: state.knobs.recurse && directory,
+                            seed: None,
                         },
                         true,
                     ) {
-                        state.startup_select = path.is_file().then(|| path.to_path_buf());
+                        state.startup_select = file.then(|| path.to_path_buf());
                         prepared_on_lane = true;
                     }
                 }
-            } else if rgpl::is_playlist_file(path) {
+            } else if playlist {
                 if let Err(error) = state.open_playlist(path) {
                     state.message = Some(error);
                 }
                 return state;
-            } else if path.is_file() || path.is_dir() {
+            } else if file || directory {
                 state.photos = PhotoList::from_path(
                     path,
                     state.knobs.include_hidden,
@@ -328,6 +360,7 @@ mod image;
 mod inspection;
 mod library;
 mod slideshow;
+mod undo;
 mod worker;
 use worker::Source;
 pub(crate) use worker::BACKGROUND_READY;

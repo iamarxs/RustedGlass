@@ -10,6 +10,24 @@ permissions:
   contents: read
 
 jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Audit locked Windows dependencies
+        shell: bash
+        run: |
+          archive=cargo-audit-x86_64-unknown-linux-gnu-v0.23.0
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --proto '=https' \
+            "https://github.com/RustSec/rustsec/releases/download/cargo-audit/v0.23.0/$archive.tgz" -o "$archive.tgz"
+          printf '%s  %s\n' 'b77993532b253fcbf550996d7716465ec3d734d4e74e7f87bfb65a19add0fb59' "$archive.tgz" | sha256sum --check
+          tar -xzf "$archive.tgz"
+          "./$archive/cargo-audit" audit --file "$GITHUB_WORKSPACE/Cargo.lock" --target-arch x86_64 --target-os windows
+
   build:
     runs-on: windows-2025
     steps:
@@ -37,10 +55,14 @@ jobs:
               throw "Tag $env:GITHUB_REF_NAME does not match EXE version $version"
           }
 
+          $exe = Get-Item ./build/RustedGlass.exe
+          if ($exe.Length -gt 64MB) { throw "EXE exceeds 64 MiB: $($exe.Length) bytes" }
+
           New-Item -ItemType Directory -Path dist | Out-Null
-          Compress-Archive -LiteralPath ./build/RustedGlass.exe `
-            -DestinationPath "dist/RustedGlass-$version-x86_64-pc-windows-msvc.zip"
-          Copy-Item -LiteralPath ./build/RustedGlass.exe -Destination ./dist/RustedGlass-x64.exe
+          $zip = "dist/RustedGlass-$version-x86_64-pc-windows-msvc.zip"
+          Compress-Archive -LiteralPath $exe.FullName -DestinationPath $zip
+          $zipItem = Get-Item $zip
+          if ($zipItem.Length -gt 64MB) { throw "ZIP exceeds 64 MiB: $($zipItem.Length) bytes" }
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -51,7 +73,7 @@ jobs:
 
   sign:
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: build
+    needs: [build, audit]
     runs-on: ubuntu-24.04
     environment: release-signing
     permissions:
@@ -71,9 +93,15 @@ jobs:
         shell: bash
         run: |
           version="${GITHUB_REF_NAME#v}"
-          filename="RustedGlass-x64.exe"
+          filename="RustedGlass-$version-x86_64-pc-windows-msvc.zip"
+          # Exactly one entry, at the ZIP root: RustedGlass.exe
+          entries=$(unzip -Z1 "dist/$filename")
+          if [ "$entries" != "RustedGlass.exe" ]; then
+            echo "Unexpected ZIP contents: $entries"
+            exit 1
+          fi
+          unzip -tq "dist/$filename"
           hash=$(sha256sum "dist/$filename" | cut -d ' ' -f 1)
-
           jq -n --arg version "$version" \
             --arg target "x86_64-pc-windows-msvc" \
             --arg filename "$filename" --arg sha256 "$hash" \
@@ -104,5 +132,5 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           gh release create "$GITHUB_REF_NAME" \
             "dist/RustedGlass-$version-x86_64-pc-windows-msvc.zip" \
-            dist/RustedGlass-x64.exe dist/update.json dist/update.json.sig \
+            dist/update.json dist/update.json.sig \
             --draft --verify-tag --generate-notes

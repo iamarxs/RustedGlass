@@ -8,27 +8,42 @@ pub(super) fn run(requests: &Lane<DecodeRequest>, events: &Lane<Event>, wake: &W
     let mut stream: Option<(u64, decode::Animation)> = None;
     while let Some(request) = requests.pop() {
         match request {
-            DecodeRequest::Open { generation, path } => {
-                let identity = crate::cache::stat(&path);
-                let outcome = match decode::open(&path) {
-                    Ok(Opened::Still(image)) => {
-                        stream = None;
-                        OpenedOutcome::Still { image }
-                    }
-                    Ok(Opened::Animated(animation, first)) => {
-                        stream = Some((generation, animation));
-                        OpenedOutcome::AnimatedFirst { frame: first }
-                    }
-                    Err(error) => {
-                        stream = None;
-                        OpenedOutcome::Failed { error }
+            DecodeRequest::Open {
+                generation,
+                path,
+                candidate,
+            } => {
+                // One stat before the decode: what the cache candidate is validated
+                // against, and the file size the reply reports.
+                let before = crate::cache::stat(&path);
+                let outcome = if candidate.is_some() && candidate == before {
+                    stream = None;
+                    OpenedOutcome::Cached
+                } else {
+                    match decode::open(&path) {
+                        Ok(Opened::Still(image)) => {
+                            stream = None;
+                            // The file is rechecked after the decode; only an unchanged
+                            // one may be stored, so its stale pixels cannot poison the
+                            // next visit.
+                            let eligible = before.is_some() && crate::cache::stat(&path) == before;
+                            OpenedOutcome::Still { image, eligible }
+                        }
+                        Ok(Opened::Animated(animation, first)) => {
+                            stream = Some((generation, animation));
+                            OpenedOutcome::AnimatedFirst { frame: first }
+                        }
+                        Err(error) => {
+                            stream = None;
+                            OpenedOutcome::Failed { error }
+                        }
                     }
                 };
                 wake.deliver(
                     events,
                     Event::Opened {
                         generation,
-                        identity,
+                        identity: before,
                         outcome,
                     },
                 );

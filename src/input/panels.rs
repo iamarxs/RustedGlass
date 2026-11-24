@@ -7,6 +7,22 @@ pub(super) fn refresh_import(hwnd: HWND) {
     view::refresh(hwnd);
 }
 
+pub(super) fn remove_duplicates(hwnd: HWND) {
+    state::with_state(|state| state.request_remove_duplicates());
+    refresh_import(hwnd);
+}
+
+pub(super) fn copy_file_path(hwnd: HWND) {
+    let Some(path) = super::chosen_path(hwnd) else {
+        return;
+    };
+    let message = match crate::fileops::copy_path(hwnd, &path) {
+        Ok(()) => "File path copied to clipboard.".to_owned(),
+        Err(error) => error,
+    };
+    fail_to_notice(hwnd, Some(message));
+}
+
 pub(super) fn copy_image(hwnd: HWND) {
     state::with_state(|state| {
         if let Some(bitmap) = state.frame() {
@@ -78,11 +94,32 @@ pub(super) fn settle_file_selection(hwnd: HWND, action: Action) -> bool {
     if matches!(
         action,
         Action::RemoveItem
+            | Action::RemoveSelected
+            | Action::RemoveDuplicates
+            | Action::UndoPlaylist
+            | Action::DeleteFile
+            | Action::DeleteSelected
+            | Action::MoveToTarget
+            | Action::Rename
+            | Action::ShufflePlaylist
+            | Action::SavePlaylist
+    ) && state::read_state(|state| state.browsing_import_preview()) == Some(true)
+    {
+        fail_to_notice(
+            hwnd,
+            Some("Wait for the scan to finish before changing the playlist.".into()),
+        );
+        return true;
+    }
+    if matches!(
+        action,
+        Action::RemoveItem
             | Action::DeleteFile
             | Action::MoveToTarget
             | Action::Rename
             | Action::SaveAs
             | Action::ShowInExplorer
+            | Action::CopyFilePath
             | Action::RemoveSelected
             | Action::DeleteSelected
             | Action::ShowFolder

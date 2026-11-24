@@ -41,7 +41,8 @@ fn check_dimensions(path: &Path, decoder: &impl image::ImageDecoder) -> Result<(
             "{path:?}: {width}x{height} is too large to display"
         ));
     }
-    budget::check(width, height, decoder.total_bytes()).map_err(|error| format!("{path:?}: {error}"))
+    budget::check(width, height, decoder.total_bytes())
+        .map_err(|error| format!("{path:?}: {error}"))
 }
 
 fn load_rgba(path: &Path) -> Result<image::RgbaImage, String> {

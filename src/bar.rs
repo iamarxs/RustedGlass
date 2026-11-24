@@ -79,6 +79,9 @@ pub fn sync(hwnd: HWND, state: &State, width: i32) {
     for (handle, enabled) in updates {
         unsafe {
             if let Some(enabled) = enabled {
+                if !enabled && HOVERED.get() == handle {
+                    HOVERED.set(HWND::default());
+                }
                 let _ = EnableWindow(handle, enabled);
             }
             w32::invalidate(handle);
@@ -191,7 +194,10 @@ pub unsafe fn draw(lparam: LPARAM) -> bool {
         return false;
     };
     let rect = item.rcItem;
-    let fill = if item.itemState.0 & ODS_SELECTED.0 != 0 {
+    let disabled = item.itemState.0 & ODS_DISABLED.0 != 0;
+    let fill = if disabled {
+        crate::style::CONTROL
+    } else if item.itemState.0 & ODS_SELECTED.0 != 0 {
         crate::style::PRESSED
     } else if HOVERED.get() == item.hwndItem {
         crate::style::HOVER
@@ -217,7 +223,7 @@ pub unsafe fn draw(lparam: LPARAM) -> bool {
                 crate::style::accent(),
             );
         }
-        let ink = if item.itemState.0 & ODS_DISABLED.0 != 0 {
+        let ink = if disabled {
             COLORREF(0x0088_8888)
         } else {
             COLORREF(0x00F3_F3F3)

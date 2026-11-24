@@ -13,12 +13,11 @@
 //! get room to carry a whole dropped batch.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use windows::Win32::Foundation::HWND;
 
 use crate::cache::FileStat;
-use crate::decode::{AnimFrame, Decoded};
 
 mod decode_lane;
 pub(super) mod prep;
@@ -49,78 +48,26 @@ enum DecodeRequest {
     Open {
         generation: u64,
         path: PathBuf,
+        /// The stat of the cache entry the window thread already holds, purely
+        /// in-memory: when it still matches the live file, no decode is needed.
+        candidate: Option<FileStat>,
     },
     /// Stream the next frame of that selection's animation.
-    NextFrame {
-        generation: u64,
-    },
+    NextFrame { generation: u64 },
     /// Rewind that selection's animation to its first frame.
-    Rewind {
-        generation: u64,
-    },
+    Rewind { generation: u64 },
 }
 
-/// What opening a selection produced.
-pub enum OpenedOutcome {
-    Still {
-        image: Decoded,
-    },
-    /// The first frame of an animation; the rest arrive as `Event::Frame`.
-    AnimatedFirst {
-        frame: AnimFrame,
-    },
-    Failed {
-        error: String,
-    },
-}
-
-/// One finished piece of background work, tagged so the caller can match it up and drop
-/// results older than what it holds already.
-pub enum Event {
-    /// The selection of `generation` opened, as pixels to show or a failure to report.
-    Opened {
-        generation: u64,
-        /// The file's length and modified time, sampled before the decode: the file size
-        /// to report, and the identity a cache insertion is checked against.
-        identity: Option<FileStat>,
-        outcome: OpenedOutcome,
-    },
-    Frame {
-        generation: u64,
-        frame: AnimFrame,
-    },
-    /// The animation played once; the UI rewinds or navigates, as it does today.
-    FrameEnded {
-        generation: u64,
-    },
-    /// A frame could not be read; the UI keeps the last good frame and stops the animation.
-    FrameFailed {
-        generation: u64,
-    },
-    Appended {
-        tag: u64,
-        rows: PreparedImport,
-    },
-    Replaced {
-        tag: u64,
-        rows: PreparedImport,
-    },
-    PrepFailed {
-        tag: u64,
-        error: String,
-    },
-    Inspected {
-        revision: u64,
-        path: PathBuf,
-        text: String,
-    },
-}
+mod events;
+pub use events::{Event, FolderSeed, OpenedOutcome};
 
 /// The two background lanes. The UI thread owns the `Worker` and is the only caller of
 /// its methods.
 pub struct Worker {
     /// The generation of the selection [`Worker::open`] hands out next.
     generation: AtomicU64,
+    latest_replace: Arc<AtomicU64>,
+    selected_loading: Arc<AtomicBool>,
     decode: Arc<Lane<DecodeRequest>>,
     prep: Arc<Lane<PrepRequest>>,
     pixels: Arc<Lane<Event>>,
@@ -137,6 +84,8 @@ impl Worker {
         let pixels = Arc::new(Lane::new(PIXEL_RESULTS));
         let notes = Arc::new(Lane::new(NOTE_RESULTS));
         let wake = Arc::new(Wake::default());
+        let latest_replace = Arc::new(AtomicU64::new(0));
+        let selected_loading = Arc::new(AtomicBool::new(false));
         // The threads' handles are dropped here: closing the lanes below ends them, and
         // a join would only hold the UI at shutdown.
         {
@@ -154,9 +103,13 @@ impl Worker {
             let (requests, results) = (Arc::clone(&prep), Arc::clone(&notes));
             let formats = formats.to_vec();
             let signal = Arc::clone(&wake);
+            let latest = Arc::clone(&latest_replace);
+            let loading = Arc::clone(&selected_loading);
             if std::thread::Builder::new()
                 .name(String::from("rg-prep"))
-                .spawn(move || prep::lane(&requests, &results, &formats, &signal))
+                .spawn(move || {
+                    prep::lane(&requests, &results, &formats, &signal, &latest, &loading)
+                })
                 .is_err()
             {
                 prep.close();
@@ -164,6 +117,8 @@ impl Worker {
         }
         Worker {
             generation: AtomicU64::new(1),
+            latest_replace,
+            selected_loading,
             decode,
             prep,
             pixels,
@@ -176,16 +131,32 @@ impl Worker {
         self.wake.set_window(hwnd);
     }
 
+    pub fn acknowledge_wake(&self) {
+        self.wake.acknowledge();
+    }
+
+    pub fn wake_pending_results(&self) {
+        if self.has_events() {
+            self.wake.post();
+        }
+    }
+
     /// Opens `path` as the new selection. The returned generation tags every decode event
     /// of this selection, so the UI keeps the events of the latest one and discards the
-    /// rest. A queued open that has not started is replaced, not queued behind — an open
+    /// rest. `cached` is the stat of the pixels the UI already holds — when the lane
+    /// finds the file untouched, the answer tells the UI to use them instead of decoding.
+    /// A queued open that has not started is replaced, not queued behind — an open
     /// is never refused for a full lane.
-    pub fn open(&self, path: PathBuf) -> Result<u64, Rejected> {
+    pub fn open(&self, path: PathBuf, cached: Option<FileStat>) -> Result<u64, Rejected> {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed);
-        self.decode
-            .push_replacing(DecodeRequest::Open { generation, path }, |request| {
-                matches!(request, DecodeRequest::Open { .. })
-            })?;
+        self.decode.push_replacing(
+            DecodeRequest::Open {
+                generation,
+                path,
+                candidate: cached,
+            },
+            |request| matches!(request, DecodeRequest::Open { .. }),
+        )?;
         Ok(generation)
     }
 
@@ -208,10 +179,16 @@ impl Worker {
 
     /// Prepares `source` into image paths; the result replaces the playlist. A queued
     /// preparation that has not started is dropped first: its files would land in the
-    /// list this newer result replaces, so the newest request wins.
+    /// list this newer result replaces, so the newest request wins. A queued details
+    /// batch is kept: its result is cached by path, and a dropped one would leave the
+    /// UI's in-flight marker waiting for a reply that never comes.
     pub fn replace(&self, tag: u64, source: Source) -> Result<(), Rejected> {
         self.prep
-            .push_replacing(PrepRequest::Replace { tag, source }, |_| true)
+            .push_replacing(PrepRequest::Replace { tag, source }, |job| {
+                !matches!(job, PrepRequest::Metadata { .. })
+            })?;
+        self.latest_replace.store(tag, Ordering::Release);
+        Ok(())
     }
 
     pub fn inspect(&self, revision: u64, path: PathBuf) -> Result<(), Rejected> {
@@ -221,12 +198,34 @@ impl Worker {
             })
     }
 
+    pub fn deduplicate(
+        &self,
+        replace_tag: u64,
+        revision: u64,
+        paths: Vec<PathBuf>,
+    ) -> Result<(), Rejected> {
+        self.prep.push_replacing(
+            PrepRequest::Deduplicate {
+                replace_tag,
+                revision,
+                paths,
+            },
+            |job| matches!(job, PrepRequest::Deduplicate { .. }),
+        )
+    }
+
     /// The next finished piece of work, without waiting; `None` when nothing is pending.
     /// Pixel results are drained first, keeping an animation's frames in order.
     pub fn next_event(&self) -> Option<Event> {
         self.pixels.try_pop().or_else(|| self.notes.try_pop())
     }
+
+    pub fn has_events(&self) -> bool {
+        self.pixels.has_waiting() || self.notes.has_waiting()
+    }
 }
+
+mod metadata;
 
 impl Drop for Worker {
     /// Stops all lanes: pushes are refused, queued jobs are discarded, blocked deliveries

@@ -5,17 +5,34 @@
 //! belongs to a selection that is no longer showing — is dropped without touching the
 //! visible picture or the playlist.
 
-use super::worker::{Event, OpenedOutcome, PreparedImport, Worker};
+use std::time::{Duration, Instant};
+
+use super::worker::{Event, FolderSeed, PreparedImport, Worker};
 use super::*;
+
+const IMPORT_NOTICE_DURATION: Duration = Duration::from_secs(3);
 
 impl State {
     /// Drains finished background work without waiting. Returns `true` when the picture,
     /// the playlist or a notice changed and the caller should repaint.
+    #[cfg(test)]
     pub fn poll_background(&mut self) -> bool {
+        self.poll_background_budget(usize::MAX)
+    }
+
+    pub fn poll_background_budget(&mut self, max: usize) -> bool {
         let mut changed = false;
-        while let Some(event) = self.worker.as_ref().and_then(Worker::next_event) {
+        for _ in 0..max {
+            let Some(event) = self.worker.as_ref().and_then(Worker::next_event) else {
+                break;
+            };
             changed |= self.apply_event(event);
         }
+        // The fallback timer drains even while a slow scan has no results to deliver.
+        changed |= self
+            .import_notice_until
+            .take_if(|deadline| Instant::now() >= *deadline)
+            .is_some();
         changed
     }
 
@@ -33,11 +50,19 @@ impl State {
         });
         match result {
             Some(Ok(())) => {
+                self.pending_import = Some(tag);
+                self.import_notice_until = Some(Instant::now() + IMPORT_NOTICE_DURATION);
                 if replace {
+                    self.folder_retry = None;
+                    self.playlist_undo = None;
                     self.replace_tag = tag;
+                    self.import_preview = None;
+                    self.import_rows = Vec::new();
+                    self.remote_import = None;
                     self.inspection = None;
                     self.open_playlist_path = None;
                     self.startup_select = None;
+                    self.direct_seed = None;
                     self.startup_slideshow = false;
                 }
                 true
@@ -62,6 +87,25 @@ impl State {
         self.animation.is_some() || self.animated_selection
     }
 
+    pub fn importing(&self) -> bool {
+        self.pending_import.is_some()
+    }
+
+    pub fn show_import_notice(&self) -> bool {
+        self.import_notice_until.is_some()
+    }
+
+    pub fn browsing_import_preview(&self) -> bool {
+        self.import_preview.is_some() || self.retrying_folder_scan()
+    }
+
+    fn import_finished(&mut self, tag: u64) {
+        if self.pending_import == Some(tag) {
+            self.pending_import = None;
+            self.import_notice_until = None;
+        }
+    }
+
     /// A reply of `generation` is accepted only while it is still the current selection —
     /// never for an outdated one.
     fn accepts(&self, generation: u64) -> bool {
@@ -70,11 +114,85 @@ impl State {
 
     fn apply_event(&mut self, event: Event) -> bool {
         match event {
+            Event::FolderRows {
+                tag,
+                replacing,
+                rows,
+            } => {
+                if tag < self.replace_tag {
+                    return false;
+                }
+                if let Err(rows) = self.stage_retry_rows(tag, rows) {
+                    self.apply_folder_rows(tag, replacing, rows);
+                    true
+                } else {
+                    false
+                }
+            }
+            Event::FolderFinished {
+                tag,
+                order,
+                seed,
+                failure,
+            } => {
+                if tag < self.replace_tag {
+                    return false;
+                }
+                self.import_finished(tag);
+                self.complete_folder_scan(tag, order, seed, failure);
+                true
+            }
+            Event::Deduplicated {
+                replace_tag,
+                revision,
+                rows,
+            } => self.apply_deduplication(replace_tag, revision, &rows),
+            Event::ImportPreview {
+                tag,
+                replacing,
+                files,
+            } => {
+                if tag < self.replace_tag
+                    || (replacing && self.startup_select.is_some())
+                    || files.is_empty()
+                {
+                    return false;
+                }
+                if self.import_preview.is_none() {
+                    if replacing {
+                        self.photos = PhotoList::empty();
+                    }
+                    self.import_preview = Some((tag, self.photos.len()));
+                }
+                let was_empty = self.photos.is_empty();
+                self.photos.extend_files(files);
+                if was_empty {
+                    self.load_current();
+                }
+                true
+            }
+            Event::ImportRows { tag, files } => {
+                if tag >= self.replace_tag {
+                    self.import_rows.extend(files);
+                }
+                false
+            }
+            Event::RemoteImport { tag, respond } => {
+                if tag >= self.replace_tag {
+                    self.remote_import = Some(respond);
+                }
+                false
+            }
             Event::Inspected {
                 revision,
                 path,
                 text,
             } => self.finish_image_info(revision, &path, text),
+            Event::Metadata {
+                revision,
+                entries,
+                complete,
+            } => crate::playlist::metadata_ready(revision, &mut self.photos, entries, complete),
             Event::Opened {
                 generation,
                 identity,
@@ -108,22 +226,21 @@ impl State {
                 self.stop_animation();
                 true
             }
-            Event::Appended { tag, rows } => {
+            Event::Appended { tag, mut rows } => {
                 if tag < self.replace_tag {
                     return false;
                 }
-                let was_empty = self.photos.is_empty();
-                let added = self.photos.extend_files(rows.files);
-                self.report_skipped(rows.skipped);
-                if was_empty && added != 0 {
-                    self.load_current();
-                }
+                self.import_finished(tag);
+                self.finish_import_files(&mut rows);
+                self.finish_append(tag, rows);
                 true
             }
-            Event::Replaced { tag, rows } => {
+            Event::Replaced { tag, mut rows } => {
                 if tag != self.replace_tag {
                     return false;
                 }
+                self.import_finished(tag);
+                self.finish_import_files(&mut rows);
                 self.apply_replaced(rows);
                 true
             }
@@ -131,7 +248,10 @@ impl State {
                 if tag < self.replace_tag {
                     return false;
                 }
+                self.import_finished(tag);
+                self.import_rows.clear();
                 if tag == self.replace_tag {
+                    self.import_preview = None;
                     self.open_playlist_path = None;
                     self.startup_select = None;
                     self.startup_slideshow = false;
@@ -141,90 +261,14 @@ impl State {
             }
         }
     }
-
-    fn apply_opened(
-        &mut self,
-        generation: u64,
-        identity: Option<crate::cache::FileStat>,
-        outcome: OpenedOutcome,
-    ) -> bool {
-        if !self.accepts(generation) || !self.load_pending {
-            return false;
-        }
-        self.load_pending = false;
-        self.file_size = identity.map(|(len, _)| len);
-        match outcome {
-            OpenedOutcome::Still { image } => {
-                self.animated_selection = false;
-                if let Some(path) = self.photos.current().cloned() {
-                    self.bitmap = Some(crate::cache::store_checked(&path, identity, image));
-                }
-            }
-            OpenedOutcome::AnimatedFirst { frame } => {
-                self.animated_selection = true;
-                self.frame_pending = false;
-                self.show_frame(frame);
-            }
-            OpenedOutcome::Failed { error } => {
-                self.animated_selection = false;
-                if let Some(path) = self.photos.current().cloned() {
-                    self.report_unreadable(&path, &error);
-                }
-            }
-        }
-        if self.bitmap.is_none() {
-            self.message = Some(
-                "Drop files or a folder here. Press O to open files or F to open a folder.".into(),
-            );
-        }
-        true
-    }
-
-    /// The latest replacement's rows: folders, playlists and batches all arrive the same
-    /// way, with the caller-chosen position when a command-line file started the scan.
-    fn apply_replaced(&mut self, rows: PreparedImport) {
-        let playlist = self.open_playlist_path.take();
-        let PreparedImport {
-            files,
-            skipped,
-            missing,
-        } = rows;
-        let empty_playlist = playlist.is_some() && skipped == 0 && missing == 0;
-        self.report_skipped(skipped);
-        let select = self.startup_select.take();
-        let start_slideshow = std::mem::take(&mut self.startup_slideshow);
-        if !files.is_empty() || empty_playlist {
-            let mut photos = PhotoList::empty();
-            photos.files = files;
-            if let Some(select) = select {
-                if let Some(position) = photos.files.iter().position(|file| *file == select) {
-                    photos.index = position;
-                }
-            }
-            self.photos = photos;
-            self.load_current();
-            if let Some(path) = &playlist {
-                if self.message.is_none() {
-                    self.message = Some(format!(
-                        "Opened {} images from {}",
-                        self.photos.len(),
-                        path.display()
-                    ));
-                }
-            }
-            if start_slideshow {
-                self.start_slideshow();
-            }
-        }
-        if missing != 0 {
-            let warning = format!("Playlist skipped {missing} missing image(s).");
-            self.notice = Some(match self.notice.take() {
-                Some(other) => format!("{warning} {other}"),
-                None => warning,
-            });
-        }
-    }
 }
+
+mod dedup;
+mod import;
+mod metadata;
+mod retry;
+mod selection;
+pub(super) use retry::FolderRetry;
 
 #[cfg(test)]
 mod tests;

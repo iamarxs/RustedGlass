@@ -12,66 +12,159 @@ use std::path::{Path, PathBuf};
 use super::{Event, Lane, Wake};
 use crate::{photo, rgpl};
 
-/// A folder or `.rgpl` file to turn into a list of image paths.
-pub enum Source {
-    Folder {
-        path: PathBuf,
+mod progressive;
+mod remote;
+mod runner;
+use remote::{is_remote, safe_playlist_path};
+pub(super) use runner::lane;
+
+mod spec;
+pub(super) use spec::PrepRequest;
+pub use spec::{PreparedImport, Source};
+
+struct Scan<'a> {
+    active: &'a dyn Fn() -> bool,
+    remote: &'a mut dyn FnMut() -> bool,
+    emit: Option<&'a mut dyn FnMut(Vec<PathBuf>)>,
+    found: &'a mut dyn FnMut(&Path),
+}
+
+impl Scan<'_> {
+    fn flush(&mut self, rows: &mut PreparedImport) {
+        if rows.files.len() == IMPORT_BATCH {
+            if let Some(emit) = &mut self.emit {
+                emit(std::mem::take(&mut rows.files));
+            }
+        }
+    }
+
+    fn prepare(&mut self, source: &Source, formats: &[String]) -> Result<PreparedImport, String> {
+        match source {
+            Source::Folder {
+                path,
+                include_hidden,
+                recurse,
+                ..
+            } => Ok(self.folder(path, *include_hidden, *recurse, formats)),
+            Source::PlaylistFile { path } => self.playlist(path, formats),
+            Source::Batch {
+                paths,
+                include_hidden,
+                recurse,
+            }
+            | Source::Folders {
+                paths,
+                include_hidden,
+                recurse,
+            } => Ok(self.batch(paths, *include_hidden, *recurse, formats)),
+        }
+    }
+
+    fn folder(
+        &mut self,
+        path: &Path,
         include_hidden: bool,
         recurse: bool,
-    },
-    /// Entries come back as listed, missing ones included, the way `rgpl::read_file`
-    /// always has; the caller reports them.
-    PlaylistFile { path: PathBuf },
-    /// A dropped batch: folders expand, playlist files load their rows, other paths stay.
-    Batch {
-        paths: Vec<PathBuf>,
-        include_hidden: bool,
-        recurse: bool,
-    },
-}
-
-/// A request to the preparation lane.
-pub(super) enum PrepRequest {
-    /// The prepared files append to the playlist.
-    Append {
-        tag: u64,
-        source: Source,
-    },
-    /// The prepared files replace the whole playlist.
-    Replace {
-        tag: u64,
-        source: Source,
-    },
-    Inspect {
-        revision: u64,
-        path: PathBuf,
-    },
-}
-
-/// Prepared rows and how many candidates were dropped, counted the way the synchronous
-/// methods have always counted them.
-#[derive(Default)]
-pub struct PreparedImport {
-    pub files: Vec<PathBuf>,
-    pub skipped: usize,
-    pub missing: usize,
-}
-
-/// Prepares `source`; an unreadable playlist is the caller's error to report.
-pub fn prepare(source: &Source, formats: &[String]) -> Result<PreparedImport, String> {
-    match source {
-        Source::Folder {
+        formats: &[String],
+    ) -> PreparedImport {
+        let (files, error) = photo::collect_reporting(
             path,
             include_hidden,
             recurse,
-        } => Ok(folder(path, *include_hidden, *recurse, formats)),
-        Source::PlaylistFile { path } => playlist(path, formats),
-        Source::Batch {
-            paths,
-            include_hidden,
-            recurse,
-        } => Ok(batch(paths, *include_hidden, *recurse, formats)),
+            formats,
+            &self.active,
+            self.found,
+        );
+        PreparedImport {
+            files,
+            read_error: error.map(|error| error.to_string()),
+            ..PreparedImport::default()
+        }
     }
+
+    fn playlist(&mut self, path: &Path, formats: &[String]) -> Result<PreparedImport, String> {
+        let mut rows = PreparedImport::default();
+        self.add_playlist(&mut rows, path, formats, Gone::Missing)?;
+        if let Some(error) = rows.read_error.take() {
+            return Err(error);
+        }
+        Ok(rows)
+    }
+
+    fn add_playlist(
+        &mut self,
+        rows: &mut PreparedImport,
+        path: &Path,
+        formats: &[String],
+        gone: Gone,
+    ) -> Result<(), String> {
+        let active = self.active;
+        let result = rgpl::visit_file(path, active, &mut |file| {
+            if !active() {
+                return;
+            }
+            // Do not look up a path until the input type and remote policy allow it.
+            if !safe_playlist_path(&file) || !photo::is_image_file(&file, formats) {
+                rows.skipped += 1;
+            } else if is_remote(&file) && !(self.remote)() {
+                rows.remote_skipped += 1;
+            } else if active() {
+                push(rows, file, formats, gone);
+            }
+            self.flush(rows);
+        });
+        if let Err(error) = result {
+            if rows.read_error.is_none() {
+                rows.read_error = Some(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn batch(
+        &mut self,
+        paths: &[PathBuf],
+        include_hidden: bool,
+        recurse: bool,
+        formats: &[String],
+    ) -> PreparedImport {
+        let mut rows = PreparedImport::default();
+        for path in paths {
+            if !(self.active)() {
+                break;
+            }
+            if path.is_dir() {
+                let (files, error) = photo::collect_reporting(
+                    path,
+                    include_hidden,
+                    recurse,
+                    formats,
+                    &self.active,
+                    self.found,
+                );
+                if let Some(error) = error {
+                    rows.read_error.get_or_insert_with(|| error.to_string());
+                }
+                for file in files {
+                    if !(self.active)() {
+                        break;
+                    }
+                    rows.files.push(file);
+                    self.flush(&mut rows);
+                }
+            } else if rgpl::is_playlist_file(path) {
+                let _ = self.add_playlist(&mut rows, path, formats, Gone::Silent);
+            } else {
+                push(&mut rows, path.clone(), formats, Gone::Skipped);
+                self.flush(&mut rows);
+            }
+        }
+        rows
+    }
+}
+
+fn deny_remote() -> bool {
+    false
 }
 
 /// A folder's images; the enumeration already checked every entry.
@@ -81,20 +174,24 @@ pub fn folder(
     recurse: bool,
     formats: &[String],
 ) -> PreparedImport {
-    PreparedImport {
-        files: photo::collect(dir, include_hidden, recurse, formats),
-        skipped: 0,
-        missing: 0,
+    Scan {
+        active: &|| true,
+        remote: &mut deny_remote,
+        emit: None,
+        found: &mut |_| {},
     }
+    .folder(dir, include_hidden, recurse, formats)
 }
 
 /// A playlist's rows: gone files are counted missing, existing unusable rows skipped.
 pub fn playlist(path: &Path, formats: &[String]) -> Result<PreparedImport, String> {
-    let mut rows = PreparedImport::default();
-    for file in rgpl::read_file(path)? {
-        push(&mut rows, file, formats, Gone::Missing);
+    Scan {
+        active: &|| true,
+        remote: &mut deny_remote,
+        emit: None,
+        found: &mut |_| {},
     }
-    Ok(rows)
+    .playlist(path, formats)
 }
 
 /// Candidates checked as they are, without expanding folders: a gone path is skipped,
@@ -115,25 +212,17 @@ pub fn batch(
     recurse: bool,
     formats: &[String],
 ) -> PreparedImport {
-    let mut rows = PreparedImport::default();
-    for path in paths {
-        if path.is_dir() {
-            rows.files
-                .extend(photo::collect(path, include_hidden, recurse, formats));
-        } else if rgpl::is_playlist_file(path) {
-            if let Ok(entries) = rgpl::read_file(path) {
-                for entry in entries {
-                    push(&mut rows, entry, formats, Gone::Silent);
-                }
-            }
-        } else {
-            push(&mut rows, path.clone(), formats, Gone::Skipped);
-        }
+    Scan {
+        active: &|| true,
+        remote: &mut deny_remote,
+        emit: None,
+        found: &mut |_| {},
     }
-    rows
+    .batch(paths, include_hidden, recurse, formats)
 }
 
 /// How a path that vanished between listing and checking is accounted.
+#[derive(Clone, Copy)]
 enum Gone {
     /// A playlist row that went: counted missing, so the caller warns.
     Missing,
@@ -157,48 +246,4 @@ fn push(rows: &mut PreparedImport, path: PathBuf, formats: &[String], gone: Gone
     }
 }
 
-/// The preparation lane: one source at a time, in the order requested.
-pub(super) fn lane(
-    requests: &Lane<PrepRequest>,
-    events: &Lane<Event>,
-    formats: &[String],
-    wake: &Wake,
-) {
-    while let Some(request) = requests.pop() {
-        let (tag, replacing, source) = match request {
-            PrepRequest::Append { tag, source } => (tag, false, source),
-            PrepRequest::Replace { tag, source } => (tag, true, source),
-            PrepRequest::Inspect { revision, path } => {
-                let text = crate::metadata::describe(&path);
-                wake.deliver(
-                    events,
-                    Event::Inspected {
-                        revision,
-                        path,
-                        text,
-                    },
-                );
-                continue;
-            }
-        };
-        let event = match prepare(&source, formats) {
-            Ok(mut rows) => {
-                // A replacing batch arrives in Explorer's name order, as the synchronous
-                // picker's `PhotoList::from_files` does.
-                if replacing && matches!(source, Source::Batch { .. }) {
-                    let mut photos = photo::PhotoList::empty();
-                    photos.files = rows.files;
-                    photos.sort_by_name(false);
-                    rows.files = photos.files;
-                }
-                if replacing {
-                    Event::Replaced { tag, rows }
-                } else {
-                    Event::Appended { tag, rows }
-                }
-            }
-            Err(error) => Event::PrepFailed { tag, error },
-        };
-        wake.deliver(events, event);
-    }
-}
+const IMPORT_BATCH: usize = 256;

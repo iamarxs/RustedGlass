@@ -9,8 +9,8 @@ use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_D
 use windows::Win32::Graphics::Gdi::{ScreenToClient, HBRUSH, HDC};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
-    LVN_BEGINDRAG, LVN_GETDISPINFOW, LVN_ODFINDITEMW, NMHDR, NMITEMACTIVATE, NMLISTVIEW, NM_CLICK,
-    NM_CUSTOMDRAW, NM_DBLCLK, NM_RCLICK,
+    LVN_BEGINDRAG, LVN_COLUMNCLICK, LVN_GETDISPINFOW, LVN_ODFINDITEMW, NMHDR, NMITEMACTIVATE,
+    NMLISTVIEW, NM_CLICK, NM_CUSTOMDRAW, NM_DBLCLK, NM_RCLICK,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL,
@@ -69,6 +69,7 @@ pub fn run(config_path: PathBuf, args: &[String]) -> Result<(), String> {
         expire_notice(hwnd);
         unsafe { w32::invalidate(hwnd) };
     }
+    crate::update_install::signal_ready();
     if let Some(path) = old_config {
         use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};
         let text = w32::wide(&format!(
@@ -91,16 +92,20 @@ pub fn run(config_path: PathBuf, args: &[String]) -> Result<(), String> {
 /// Repaints, syncs playback timers and matches the tool bar's buttons to the state: the one place
 /// that says "something changed, show it again".
 pub fn refresh(hwnd: HWND) {
+    refresh_with_scroll(hwnd, None);
+}
+
+fn refresh_with_scroll(hwnd: HWND, anchor: Option<&playlist::ScrollAnchor>) {
+    playlist::request_metadata();
     unsafe {
         caption::update(hwnd);
         timers::sync(hwnd);
         layout_controls(hwnd);
-        let unreadable = state::with_state(|state| {
-            if state.playlist_visible {
-                playlist::refresh(&state.photos);
-            }
-            std::mem::take(&mut state.unreadable_notice_pending)
-        });
+        if state::read_state(|state| state.playlist_visible) == Some(true) {
+            playlist::refresh(anchor);
+        }
+        let unreadable =
+            state::with_state(|state| std::mem::take(&mut state.unreadable_notice_pending));
         if unreadable == Some(true) {
             expire_notice(hwnd);
         }
@@ -111,7 +116,9 @@ pub fn refresh(hwnd: HWND) {
 
 fn layout_controls(hwnd: HWND) {
     let (width, height) = unsafe { w32::client_size(hwnd) };
-    zoom_overlay::layout(hwnd, (width, height));
+    let area =
+        state::with_state(|state| image_area((width, height), state)).unwrap_or((width, height));
+    zoom_overlay::layout(hwnd, area);
     playlist::resize(width as i32, height as i32);
     state::with_state(|state| {
         if state.dialog == Dialog::Shortcuts {
@@ -119,6 +126,15 @@ fn layout_controls(hwnd: HWND) {
         }
         bar::sync(hwnd, state, width as i32);
     });
+}
+
+/// The picture uses the left half while the playlist is visible.
+pub(crate) fn image_area(area: (u32, u32), state: &state::State) -> (u32, u32) {
+    if state.playlist_visible && state.dialog == Dialog::None {
+        (area.0 / 2, area.1)
+    } else {
+        area
+    }
 }
 
 unsafe fn arm(hwnd: HWND, id: usize, delay: u32) {
@@ -268,18 +284,16 @@ pub fn expire_notice(hwnd: HWND) {
 mod messages;
 use messages::wndproc;
 mod background;
-
 mod settings;
 pub(crate) mod zoom_overlay;
 use settings::{confirm_prompt, pick_folder, press_apply, toggle_setting};
-
 mod frame;
 use frame::frame_style;
 pub use frame::{set_borderless, set_fullscreen};
-
 pub(crate) mod accessibility;
 mod caption;
-mod timers;
-
 #[cfg(test)]
 mod drop_tests;
+#[cfg(test)]
+mod playlist_tests;
+mod timers;

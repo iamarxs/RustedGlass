@@ -5,7 +5,7 @@ use windows::core::GUID;
 use windows::Win32::System::Com::{CoUninitialize, CLSCTX_SERVER};
 use windows::Win32::UI::Accessibility::{IAccPropServices, Name_Property_GUID, PROPID_ACC_NAME};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, VK_ESCAPE, VK_F1, VK_SHIFT, VK_TAB,
+    GetKeyState, VIRTUAL_KEY, VK_ESCAPE, VK_F1, VK_SHIFT, VK_TAB,
 };
 use windows::Win32::UI::Shell::RemoveWindowSubclass;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -123,7 +123,7 @@ unsafe extern "system" fn settings_key(
     _holder: usize,
 ) -> LRESULT {
     match msg {
-        WM_KEYDOWN if wparam.0 == VK_ESCAPE.0 as usize => unsafe {
+        WM_KEYDOWN if matches!(VIRTUAL_KEY(wparam.0 as u16), VK_ESCAPE | VK_F1) => unsafe {
             let root = GetAncestor(hwnd, GA_ROOT);
             let _ = SetFocus(Some(root));
             let _ = PostMessageW(Some(root), WM_KEYDOWN, wparam, lparam);

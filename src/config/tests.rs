@@ -175,7 +175,10 @@ fn a_successful_save_clears_the_pending_changes() {
     cfg.set("ShowGallery", Value::Bool(false));
     assert!(cfg.has_changes());
     cfg.save_user().unwrap();
-    assert!(!cfg.has_changes(), "a successful save clears the dirty keys");
+    assert!(
+        !cfg.has_changes(),
+        "a successful save clears the dirty keys"
+    );
 
     fs::remove_dir_all(&dir).ok();
 }
@@ -184,11 +187,7 @@ fn a_successful_save_clears_the_pending_changes() {
 fn a_failed_save_keeps_the_changes_pending() {
     let dir = crate::test_path("rg_cfg_failed_save");
     fs::create_dir_all(&dir).unwrap();
-    write_json(
-        &dir,
-        CONFIG_USER,
-        r#"{"_Metadata":{"ConfigVersion":0.5}}"#,
-    );
+    write_json(&dir, CONFIG_USER, r#"{"_Metadata":{"ConfigVersion":0.5}}"#);
 
     let mut cfg = Config::load(dir.join(CONFIG_USER), &[]);
     cfg.set("ShowGallery", Value::Bool(false));

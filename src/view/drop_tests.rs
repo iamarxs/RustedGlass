@@ -39,6 +39,89 @@ fn drop_paths(hwnd: HWND, paths: &[&Path]) {
 }
 
 #[test]
+fn a_single_playlist_dropped_on_the_image_keeps_its_file_order() {
+    let dir = crate::test_path("playlist-drop-open-order");
+    std::fs::create_dir_all(&dir).unwrap();
+    let z = dir.join("z.ppm");
+    let a = dir.join("a.ppm");
+    for file in [&z, &a] {
+        std::fs::write(file, b"P6\n1 1\n255\n\xff\x00\x00").unwrap();
+    }
+    let list = dir.join("rows.rgpl");
+    std::fs::write(&list, "z.ppm\na.ppm\nz.ppm\n").unwrap();
+    let packed = dir.join("rows.rgplz");
+    crate::rgpl::write_file(&packed, &[z.clone(), a.clone(), z.clone()]).unwrap();
+    let broken = dir.join("broken.rgpl");
+    std::fs::write(&broken, b"\xff\xfe\n").unwrap();
+    let config = dir.join("rgconfig.json");
+
+    let mut viewer = state::State::new(config.clone(), &[]);
+    viewer.open_files(std::slice::from_ref(&a));
+    state::install(viewer);
+    let hwnd = unsafe { create_window() }.unwrap();
+    input::apply_action(hwnd, tools::Action::ShowPlaylist);
+    let pane = unsafe {
+        FindWindowExW(
+            Some(hwnd),
+            None,
+            windows::core::w!("SysListView32"),
+            PCWSTR::null(),
+        )
+    }
+    .unwrap();
+    for path in [&list, &packed] {
+        drop_paths(hwnd, &[path]);
+        state::with_state(|viewer| {
+            assert_eq!(
+                viewer.photos.files,
+                [z.clone(), a.clone(), z.clone()],
+                "the dropped playlist keeps its rows, comments and duplicates"
+            );
+        })
+        .unwrap();
+        drop_paths(pane, &[path]);
+        assert_eq!(
+            state::read_state(|viewer| viewer.photos.files.clone()).unwrap(),
+            [
+                z.clone(),
+                a.clone(),
+                z.clone(),
+                z.clone(),
+                a.clone(),
+                z.clone()
+            ]
+        );
+    }
+    let before = state::with_state(|viewer| viewer.photos.files.clone()).unwrap();
+    drop_paths(hwnd, &[&broken]);
+    state::with_state(|viewer| {
+        assert_eq!(
+            viewer.photos.files, before,
+            "a broken playlist changes nothing"
+        );
+        let notice = viewer.notice.as_deref().unwrap_or("");
+        assert!(notice.contains("not valid UTF-8"), "{notice}");
+    })
+    .unwrap();
+
+    drop_paths(hwnd, &[&broken, &a]);
+    state::read_state(|viewer| {
+        assert_eq!(viewer.photos.files, [a.clone()]);
+        assert!(viewer
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("not valid UTF-8")));
+    })
+    .unwrap();
+
+    unsafe { DestroyWindow(hwnd) }.unwrap();
+    for file in [z, a, list, packed, broken, config] {
+        std::fs::remove_file(file).unwrap();
+    }
+    std::fs::remove_dir(dir).unwrap();
+}
+
+#[test]
 fn playlist_drops_append_but_viewer_drops_replace() {
     let dir = crate::test_path("playlist-drop");
     let folder = dir.join("folder");

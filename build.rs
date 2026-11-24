@@ -50,8 +50,9 @@ fn main() {
     assert!(status.success(), "could not compile app.rc");
     println!("cargo:rustc-link-arg={}", resource.display());
     println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
-    let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo source directory"))
-        .join("app.manifest");
+    let manifest =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo source directory"))
+            .join("app.manifest");
     println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
     println!(
         "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' \

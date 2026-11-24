@@ -2,6 +2,10 @@
 //!
 //! A delete goes to the recycle bin.
 
+mod clipboard;
+
+pub(crate) use clipboard::copy_path;
+
 use crate::w32::file_name;
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStrExt;
@@ -221,13 +225,15 @@ pub fn show_in_explorer(path: &Path) -> Result<(), String> {
     })
 }
 
-/// What a rename prompt pre-fills: the name without its extension.
-pub fn stem(path: &Path) -> String {
+/// What a rename prompt pre-fills: the full file name, and the length of its stem (everything
+/// before the final extension) in UTF-16 code units, so the edit control can select the stem.
+pub(crate) fn prefill(path: &Path) -> (String, usize) {
     let name = file_name(path);
-    match name.rfind('.') {
-        Some(dot) if dot > 0 => name[..dot].to_string(),
-        _ => name,
-    }
+    let stem_len = match name.rfind('.') {
+        Some(dot) if dot > 0 => name[..dot].encode_utf16().count(),
+        _ => name.encode_utf16().count(),
+    };
+    (name, stem_len)
 }
 
 /// The extension a rename must keep, so the file stays a picture.

@@ -1,4 +1,5 @@
 use super::*;
+use windows::core::w;
 use windows::Win32::UI::Shell::{FOS_FORCEFILESYSTEM, FOS_OVERWRITEPROMPT, FOS_STRICTFILETYPES};
 
 /// COM is needed by the file and folder pickers; calling it again is harmless.
@@ -18,25 +19,22 @@ pub fn pick_files(parent: HWND, heading: &str) -> Vec<PathBuf> {
     pick(parent, FOS_ALLOWMULTISELECT, heading)
 }
 
-/// One file of one kind, for the playlist dialogs. `None` if the user cancelled.
-pub fn pick_one_file(parent: HWND, heading: &str, label: &str, pattern: &str) -> Option<PathBuf> {
+pub fn pick_playlist(parent: HWND) -> Option<PathBuf> {
     init_com();
     let Ok(dialog) = (unsafe {
         CoCreateInstance::<_, IFileOpenDialog>(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
     }) else {
         return None;
     };
-    let wide_name = w32::wide(label);
-    let wide_pattern = w32::wide(pattern);
     let filter = [COMDLG_FILTERSPEC {
-        pszName: PCWSTR(wide_name.as_ptr()),
-        pszSpec: PCWSTR(wide_pattern.as_ptr()),
+        pszName: w!("RustedGlass playlists (*.rgpl; *.rgplz)"),
+        pszSpec: w!("*.rgpl;*.rgplz"),
     }];
     unsafe {
         dialog
             .SetOptions(dialog.GetOptions().ok()? | FOS_FORCEFILESYSTEM)
             .ok()?;
-        let _ = dialog.SetTitle(PCWSTR(w32::wide(heading).as_ptr()));
+        let _ = dialog.SetTitle(w!("Open playlist"));
         let _ = dialog.SetFileTypes(&filter);
         if dialog.Show(Some(parent)).is_err() {
             return None;
@@ -45,33 +43,38 @@ pub fn pick_one_file(parent: HWND, heading: &str, label: &str, pattern: &str) ->
     }
 }
 
-/// Ask for a name to save to. `suggested` is filled into the name field, and `pattern` decides
-/// which kind of file the dialog offers.
-pub fn pick_save_file(
-    parent: HWND,
-    heading: &str,
-    label: &str,
-    pattern: &str,
-    suggested: &str,
-) -> Option<PathBuf> {
+pub fn pick_playlist_destination(parent: HWND) -> Option<PathBuf> {
+    let filters = [
+        COMDLG_FILTERSPEC {
+            pszName: w!("Compressed playlist (*.rgplz)"),
+            pszSpec: w!("*.rgplz"),
+        },
+        COMDLG_FILTERSPEC {
+            pszName: w!("RustedGlass playlist (*.rgpl)"),
+            pszSpec: w!("*.rgpl"),
+        },
+    ];
     save_dialog(
         parent,
-        heading,
-        label,
-        pattern,
-        suggested,
-        crate::rgpl::EXTENSION,
-        FILEOPENDIALOGOPTIONS(0),
+        "Save playlist",
+        &filters,
+        "playlist",
+        crate::rgpl::PACKED_EXTENSION,
+        FOS_STRICTFILETYPES,
     )
 }
 
 pub fn pick_image_destination(parent: HWND, image: &Path) -> Option<PathBuf> {
     let extension = image.extension()?.to_str()?;
+    let pattern = w32::wide(&format!("*.{extension}"));
+    let filter = [COMDLG_FILTERSPEC {
+        pszName: w!("Original image format"),
+        pszSpec: PCWSTR(pattern.as_ptr()),
+    }];
     save_dialog(
         parent,
         "Save as",
-        "Original image format",
-        &format!("*.{extension}"),
+        &filter,
         &w32::file_name(image),
         extension,
         FOS_STRICTFILETYPES,
@@ -81,8 +84,7 @@ pub fn pick_image_destination(parent: HWND, image: &Path) -> Option<PathBuf> {
 fn save_dialog(
     parent: HWND,
     heading: &str,
-    label: &str,
-    pattern: &str,
+    filters: &[COMDLG_FILTERSPEC],
     suggested: &str,
     extension: &str,
     flags: FILEOPENDIALOGOPTIONS,
@@ -93,15 +95,9 @@ fn save_dialog(
     }) else {
         return None;
     };
-    let wide_name = w32::wide(label);
-    let wide_pattern = w32::wide(pattern);
-    let filter = [COMDLG_FILTERSPEC {
-        pszName: PCWSTR(wide_name.as_ptr()),
-        pszSpec: PCWSTR(wide_pattern.as_ptr()),
-    }];
     unsafe {
         let _ = dialog.SetTitle(PCWSTR(w32::wide(heading).as_ptr()));
-        let _ = dialog.SetFileTypes(&filter);
+        dialog.SetFileTypes(filters).ok()?;
         let options = dialog.GetOptions().ok()? | FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT;
         dialog.SetOptions(options | flags).ok()?;
         let _ = dialog.SetDefaultExtension(PCWSTR(w32::wide(extension).as_ptr()));

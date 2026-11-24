@@ -1,7 +1,8 @@
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Graphics::Gdi::HDC;
+use windows::Win32::Foundation::POINT;
+use windows::Win32::Graphics::Gdi::{ScreenToClient, HDC};
 use windows::Win32::UI::Controls::{EM_SETLIMITTEXT, EM_SETSEL};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
 use windows::Win32::UI::Shell::SetWindowSubclass;
@@ -30,10 +31,18 @@ thread_local! {
 }
 
 fn available(state: &state::State) -> bool {
-    state.frame().is_some()
-        && state.dialog == Dialog::None
-        && !state.playlist_visible
-        && !state.navigation_pending
+    state.frame().is_some() && state.dialog == Dialog::None && !state.navigation_pending
+}
+
+/// The pane the picture occupies, the left half while the playlist is open.
+fn image_area(hwnd: HWND) -> (u32, u32) {
+    let client = unsafe { w32::client_size(hwnd) };
+    state::with_state(|state| super::image_area(client, state)).unwrap_or(client)
+}
+
+/// Whether a client point is over the picture rather than the playlist beside it.
+fn inside(area: (u32, u32), point: (i32, i32)) -> bool {
+    (0..area.0 as i32).contains(&point.0) && (0..area.1 as i32).contains(&point.1)
 }
 
 fn visible() -> bool {
@@ -64,6 +73,8 @@ fn percent_text(factor: f64) -> String {
         .to_owned()
 }
 
+/// `area` is the picture's pane, the left half while the playlist is open: a mode fits the
+/// picture into that half, not into the window behind the list.
 pub(crate) fn change(hwnd: HWND, area: (u32, u32), action: Action) {
     match action {
         Action::ZoomMode(index) => {
@@ -83,12 +94,45 @@ pub(crate) fn change(hwnd: HWND, area: (u32, u32), action: Action) {
 }
 
 pub(crate) fn step(hwnd: HWND, area: (u32, u32), delta: i32) {
+    zoom(hwnd, area, delta, None);
+}
+
+/// Ctrl+wheel keeps the image point under the cursor in place, as far as the pan limits allow.
+/// Over the playlist beside the picture the wheel does not zoom it.
+pub(crate) fn wheel(hwnd: HWND, area: (u32, u32), delta: i32, at: (i32, i32)) {
+    let mut point = POINT { x: at.0, y: at.1 };
+    let Some(point) = unsafe { ScreenToClient(hwnd, &mut point) }
+        .as_bool()
+        .then_some((point.x, point.y))
+    else {
+        return;
+    };
+    if !inside(area, point) {
+        return;
+    }
+    zoom(hwnd, area, delta, Some(point));
+}
+
+/// The multiplier of one step: up (a positive delta) zooms in, down zooms out.
+fn wheel_factor(percent: f64, delta: i32) -> f64 {
+    let step = zoom::zoom_step(percent, delta);
+    if delta > 0 {
+        step
+    } else {
+        1.0 / step
+    }
+}
+
+fn zoom(hwnd: HWND, area: (u32, u32), delta: i32, anchor: Option<(i32, i32)>) {
     if delta == 0 || FIELD.get().is_some() {
         return;
     }
     state::with_state(|state| {
-        let step = zoom::zoom_step(state.knobs.zoom_step_percent, delta);
-        state.zoom_by(area, if delta > 0 { step } else { 1.0 / step });
+        let by = wheel_factor(state.knobs.zoom_step_percent, delta);
+        match anchor {
+            Some(anchor) => state.zoom_by_anchored(area, by, anchor),
+            None => state.zoom_by(area, by),
+        }
     });
     show(hwnd);
     refresh(hwnd);
@@ -121,7 +165,7 @@ pub(crate) fn open(hwnd: HWND) {
         let _ = unsafe { SetFocus(Some(field)) };
         return;
     }
-    let area = unsafe { w32::client_size(hwnd) };
+    let area = image_area(hwnd);
     let Some(Some((factor, revision))) = state::with_state(|state| {
         available(state).then(|| (state.factor(area), state.slide_revision))
     }) else {
@@ -172,6 +216,8 @@ fn parse_percent(text: &str) -> Option<f64> {
 }
 
 pub(super) fn apply(hwnd: HWND) {
+    // Taken outside the borrow below: `image_area` itself reads the state.
+    let area = image_area(hwnd);
     let Some(field) = FIELD.get() else { return };
     let text = unsafe { w32::control_text(field) };
     let Some(percent) = parse_percent(&text) else {
@@ -183,6 +229,12 @@ pub(super) fn apply(hwnd: HWND) {
     let applied = state::with_state(|state| {
         if available(state) && REVISION.get() == state.slide_revision {
             state.set_zoom_factor(percent / 100.0);
+            // An exact value can zoom out past the pan limits of the picture.
+            let image = state.frame().map(|bitmap| (bitmap.width, bitmap.height));
+            if let Some(image) = image {
+                state.offset =
+                    crate::render::clamped_offset(image, area, state.factor(area), state.offset);
+            }
             return true;
         }
         false
@@ -198,7 +250,7 @@ pub(super) fn click(hwnd: HWND, point: LPARAM) -> bool {
     if !editing && !visible() {
         return false;
     }
-    let (x, y, w, h) = bounds(unsafe { w32::client_size(hwnd) }, editing);
+    let (x, y, w, h) = bounds(image_area(hwnd), editing);
     if (x..x + w).contains(&w32::pointer_x(point)) && (y..y + h).contains(&w32::pointer_y(point)) {
         open(hwnd);
         return FIELD.get().is_some();
@@ -230,7 +282,17 @@ pub(super) fn clear(hwnd: HWND) {
     }
 }
 
+/// `area` is the picture's pane (`view::image_area`), so the field follows the picture when the
+/// playlist takes the other half. The pane can shrink or split under a panned picture, so the
+/// pan is re-clamped here on every layout; a no-op while it is within bounds.
 pub(super) fn layout(hwnd: HWND, area: (u32, u32)) {
+    state::with_state(|state| {
+        let image = state.frame().map(|bitmap| (bitmap.width, bitmap.height));
+        if let Some(image) = image {
+            state.offset =
+                crate::render::clamped_offset(image, area, state.factor(area), state.offset);
+        }
+    });
     let field = FIELD.get();
     if field.is_none() && UNTIL.get().is_none() {
         return;
@@ -245,6 +307,7 @@ pub(super) fn layout(hwnd: HWND, area: (u32, u32)) {
     }
 }
 
+/// `area` is the picture's pane, like `State::factor` and `layout` take it.
 pub(crate) fn draw(dc: HDC, area: (u32, u32), state: &state::State) {
     let editing = FIELD.get().is_some();
     if (!editing && !visible()) || !available(state) || REVISION.get() != state.slide_revision {
@@ -267,16 +330,4 @@ pub(crate) fn draw(dc: HDC, area: (u32, u32), state: &state::State) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::parse_percent;
-
-    #[test]
-    fn exact_zoom_accepts_decimal_percentages_within_the_manual_range() {
-        assert_eq!(parse_percent("137.5"), Some(137.5));
-        assert_eq!(parse_percent("137,5 %"), Some(137.5));
-        assert_eq!(parse_percent("10000"), Some(10_000.0));
-        for invalid in ["", "NaN", "inf", "0", "10000.1", "-25", "1,2.3"] {
-            assert_eq!(parse_percent(invalid), None);
-        }
-    }
-}
+mod tests;

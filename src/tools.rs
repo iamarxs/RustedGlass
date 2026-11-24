@@ -33,6 +33,8 @@ pub enum Action {
     Next,
     First,
     Last,
+    PageUp,
+    PageDown,
     Rotate,
     RandomOrder,
     /// Repeat the slideshow when it reaches the last image.
@@ -57,19 +59,23 @@ pub enum Action {
     SavePlaylist,
     /// Takes the selected rows out of the list, leaving the files on disk.
     RemoveSelected,
+    RemoveDuplicates,
     /// Sends the files of the selected rows to the recycle bin.
     DeleteSelected,
     /// Opens the folder a selected file sits in.
     ShowFolder,
-    /// Rebuilds the rows in name order. `descending` reverses them.
-    SortByName(bool),
+    TogglePlaylistColumn(crate::photo::Column),
     ImageInfo,
     ShufflePlaylist,
+    /// Restores the rows, order and selection saved before the last playlist edit.
+    UndoPlaylist,
+    RetryFolderScan,
     /// Whatever panel is open. `Esc` asks for this instead of picking a panel itself.
     ClosePanel,
     Quit,
     About,
     CopyImage,
+    CopyFilePath,
 }
 
 pub struct Item {

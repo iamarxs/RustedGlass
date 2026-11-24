@@ -7,7 +7,7 @@ use windows::Win32::Foundation::{COLORREF, HWND};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
     EndPaint, IntersectClipRect, RestoreDC, SaveDC, SelectObject, COLORONCOLOR, HALFTONE, HBITMAP,
-    HDC, HGDIOBJ, PAINTSTRUCT, SRCCOPY,
+    HDC, HGDIOBJ, PAINTSTRUCT, RGN_ERROR, SRCCOPY,
 };
 
 use crate::dialog::{self, Dialog};
@@ -52,27 +52,10 @@ pub unsafe fn paint(hwnd: HWND) {
             return;
         };
         let hdc = back.dc;
-        let covered = crate::playlist::is_visible();
         let (width, height) = (area.0 as i32, area.1 as i32);
-        let paint_height = if covered {
-            state::with_state(|state| {
-                if state.toolbar_visible {
-                    height.min(crate::tools::BAND_HEIGHT)
-                } else {
-                    0
-                }
-            })
-            .unwrap_or(height)
-        } else {
-            height
-        };
-        if paint_height == 0 {
-            return;
-        }
-
         unsafe {
             let _ = SelectObject(hdc, style::font());
-            w32::fill_rect(hdc, 0, 0, width, paint_height, BACKGROUND);
+            w32::fill_rect(hdc, 0, 0, width, height, BACKGROUND);
         }
         let stretch = if LIVE_RESIZE.get() {
             COLORONCOLOR
@@ -80,17 +63,18 @@ pub unsafe fn paint(hwnd: HWND) {
             HALFTONE
         };
         state::with_state(|state| unsafe {
+            let area = crate::view::image_area(area, state);
             let factor = state.factor(area);
             let offset = state.offset;
             let mut render_error = None;
             if let Some(bitmap) = state.bitmap.as_mut() {
-                if covered {
-                    // The image still shows through the gaps between toolbar buttons.
+                if area.0 < width as u32 {
                     let saved = SaveDC(hdc);
                     if saved != 0 {
-                        let _ = IntersectClipRect(hdc, 0, 0, width, paint_height);
-                        render_error =
-                            render::draw(hdc, bitmap, area, factor, offset, stretch).err();
+                        if IntersectClipRect(hdc, 0, 0, area.0 as i32, height) != RGN_ERROR {
+                            render_error =
+                                render::draw(hdc, bitmap, area, factor, offset, stretch).err();
+                        }
                         let _ = RestoreDC(hdc, saved);
                     }
                 } else {
@@ -100,18 +84,20 @@ pub unsafe fn paint(hwnd: HWND) {
 
             if state.dialog != Dialog::None {
                 dialog::draw(&state.dialog, hdc, width, height);
-            } else if !covered {
+            } else {
                 if let Some(message) = render_error
                     .as_ref()
                     .or(state.notice.as_ref())
-                    .or(state.message.as_ref())
+                    .map(String::as_str)
+                    .or_else(|| state.show_import_notice().then_some("Scanning for images…"))
+                    .or(state.message.as_deref())
                 {
                     status(hdc, area, message);
                 }
                 crate::view::zoom_overlay::draw(hdc, area, state);
             }
         });
-        back.present(screen, area.0, paint_height as u32);
+        back.present(screen, area.0, area.1);
     });
     let _ = unsafe { EndPaint(hwnd, &paint_struct) };
 }

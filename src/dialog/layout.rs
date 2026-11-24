@@ -1,5 +1,6 @@
 use super::*;
 use windows::Win32::Foundation::RECT;
+use windows::Win32::UI::Controls::{EM_SCROLLCARET, EM_SETSEL};
 /// Opens a panel: builds the child controls of `parent`. The caller stores the `Dialog` in its
 /// own state; this only mirrors it into Win32 controls.
 pub fn open(dialog: &Dialog, config: &Config, parent: HWND, file: Option<&Path>) {
@@ -146,7 +147,10 @@ pub fn open(dialog: &Dialog, config: &Config, parent: HWND, file: Option<&Path>)
     }
     if matches!(dialog, Dialog::Text(_)) {
         let class = w32::wide("EDIT");
-        let text = w32::wide(&file.map_or_else(String::new, crate::fileops::stem));
+        // The prompt shows the full file name; the stem is pre-selected so typing replaces it and
+        // keeps the extension.
+        let (label, stem_len) = file.map_or_else(|| (String::new(), 0), crate::fileops::prefill);
+        let text = w32::wide(&label);
         let style =
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32);
         if let Ok(handle) = create(
@@ -168,6 +172,15 @@ pub fn open(dialog: &Dialog, config: &Config, parent: HWND, file: Option<&Path>)
                     Some(WPARAM(font as usize)),
                     Some(LPARAM(0)),
                 );
+                if file.is_some() {
+                    let _ = SendMessageW(
+                        handle,
+                        EM_SETSEL,
+                        Some(WPARAM(0)),
+                        Some(LPARAM(stem_len as isize)),
+                    );
+                    let _ = SendMessageW(handle, EM_SCROLLCARET, None, None);
+                }
                 // Enter belongs to the field, so forward it as a click on "Apply".
                 let _ = SetWindowSubclass(handle, Some(prompt_key), PROMPT_ID, parent.0 as usize);
                 let _ = SetFocus(Some(handle));

@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, MapVirtualKeyW, MAPVK_VK_TO_CHAR, VIRTUAL_KEY, VK_CONTROL, VK_DELETE, VK_DOWN,
-    VK_END, VK_ESCAPE, VK_F1, VK_F10, VK_F11, VK_F12, VK_F2, VK_HOME, VK_LEFT, VK_RIGHT, VK_SHIFT,
-    VK_SPACE, VK_UP,
+    VK_END, VK_ESCAPE, VK_F1, VK_F10, VK_F11, VK_F12, VK_F2, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR,
+    VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
 };
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
@@ -21,6 +21,10 @@ use crate::state;
 use crate::tools::{self, Action};
 use crate::view;
 use crate::w32;
+
+/// Posted to the viewer when a playlist row is right-clicked: `wparam` is the row plus one, so
+/// zero means the click missed the rows (the header or an empty area).
+pub(crate) const ROW_MENU: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 4;
 
 /// Show the image at this place in the list. A row of the playlist and `Home` / `End` all ask
 /// for the same thing, so they share this.
@@ -91,20 +95,24 @@ pub fn apply_action(hwnd: HWND, action: Action) {
             let last = state::with_state(|state| state.photos.len().saturating_sub(1)).unwrap_or(0);
             jump_to(hwnd, if action == Action::First { 0 } else { last });
         }
+        Action::PageUp | Action::PageDown => {
+            playlist::browse_page(hwnd, action == Action::PageDown);
+        }
         Action::ShowPlaylist => {
-            let (width, height) = (screen.0 as i32, screen.1 as i32);
-            state::with_state(|state| {
+            let visible = state::with_state(|state| {
                 state.playlist_visible = !state.playlist_visible;
                 if state.playlist_visible {
                     state.pause_slideshow();
-                    playlist::show(hwnd, &state.photos, width, height);
-                } else {
-                    playlist::hide();
-                    if !state.slideshow_paused_by_space {
-                        state.resume_slideshow();
-                    }
+                } else if !state.slideshow_paused_by_space {
+                    state.resume_slideshow();
                 }
+                state.playlist_visible
             });
+            if visible == Some(true) {
+                playlist::show(hwnd);
+            } else if visible == Some(false) {
+                playlist::hide();
+            }
             view::refresh(hwnd);
         }
         Action::Rotate => {
@@ -112,7 +120,10 @@ pub fn apply_action(hwnd: HWND, action: Action) {
             view::refresh(hwnd);
         }
         Action::ZoomMode(_) | Action::FitOriginal | Action::ZoomIn | Action::ZoomOut => {
-            view::zoom_overlay::change(hwnd, screen, action);
+            // The keys zoom the picture's pane, which is the left half while the playlist is open.
+            let image =
+                state::with_state(|state| view::image_area(screen, state)).unwrap_or(screen);
+            view::zoom_overlay::change(hwnd, image, action);
         }
         Action::ExactZoom => view::zoom_overlay::open(hwnd),
         Action::StartSlideshow | Action::StopSlideshow => {
@@ -132,13 +143,11 @@ pub fn apply_action(hwnd: HWND, action: Action) {
             view::refresh(hwnd);
         }
         Action::ShufflePlaylist => {
-            state::with_state(|state| {
-                let shown = state.photos.file_index(state.photos.index);
-                state.photos.shuffle(crate::state::random_seed());
-                if let Some(index) = shown {
-                    state.photos.index = state.photos.position_of_file(index).unwrap_or(0);
-                }
-            });
+            state::with_state(|state| state.shuffle_playlist_rows());
+            view::refresh(hwnd);
+        }
+        Action::UndoPlaylist => {
+            state::with_state(|state| state.undo_playlist_edit());
             view::refresh(hwnd);
         }
         Action::RandomOrder => {
@@ -169,6 +178,10 @@ pub fn apply_action(hwnd: HWND, action: Action) {
                 });
                 panels::refresh_import(hwnd);
             }
+        }
+        Action::RetryFolderScan => {
+            state::with_state(|state| state.retry_folder_scan());
+            panels::refresh_import(hwnd);
         }
         Action::OpenFolder | Action::AddFolder => {
             let folder = match action {
@@ -210,7 +223,7 @@ pub fn apply_action(hwnd: HWND, action: Action) {
             fail_to_notice(hwnd, failure);
         }
         Action::OpenPlaylist => {
-            let path = dialog::pick_one_file(hwnd, "Open playlist", "Playlists (.rgpl)", "*.rgpl");
+            let path = dialog::pick_playlist(hwnd);
             if let Some(path) = path {
                 state::with_state(|state| {
                     if let Err(message) = state.open_playlist(&path) {
@@ -221,45 +234,38 @@ pub fn apply_action(hwnd: HWND, action: Action) {
             }
         }
         Action::SavePlaylist => {
-            let path = dialog::pick_save_file(
-                hwnd,
-                "Save playlist",
-                "Playlists (.rgpl)",
-                "*.rgpl",
-                "playlist",
-            );
+            let path = dialog::pick_playlist_destination(hwnd);
             if let Some(path) = path {
                 let failure = state::with_state(|state| state.save_playlist(&path).err()).flatten();
                 fail_to_notice(hwnd, failure);
             }
         }
         Action::RemoveSelected => {
-            let rows = targets();
+            let Some(rows) = chosen_rows(hwnd) else {
+                return;
+            };
             state::with_state(|state| state.remove_many(&rows));
             view::refresh(hwnd);
         }
         Action::DeleteSelected => {
-            let rows = targets();
+            let Some(rows) = chosen_rows(hwnd) else {
+                return;
+            };
             let failure = state::with_state(|state| state.delete_many(&rows)).flatten();
             fail_to_notice(hwnd, failure);
         }
         Action::ShowFolder => {
-            let rows = targets();
-            let failure = state::with_state(|state| {
-                let row = rows.first().copied().unwrap_or(state.photos.index);
-                state
-                    .photos
-                    .path_at(row)
-                    .and_then(|path| crate::fileops::show_in_explorer(path).err())
-            })
-            .flatten();
+            let failure = pointer::chosen_path(hwnd)
+                .and_then(|path| crate::fileops::show_in_explorer(&path).err());
             fail_to_notice(hwnd, failure);
         }
-        Action::SortByName(descending) => {
-            state::with_state(|state| state.sort_by_name(descending));
+        Action::CopyImage => panels::copy_image(hwnd),
+        Action::CopyFilePath => panels::copy_file_path(hwnd),
+        Action::RemoveDuplicates => panels::remove_duplicates(hwnd),
+        Action::TogglePlaylistColumn(column) => {
+            playlist::toggle_column(column);
             view::refresh(hwnd);
         }
-        Action::CopyImage => panels::copy_image(hwnd),
         Action::About => crate::about::show(hwnd),
         Action::ImageInfo => {
             if state::with_state(|state| state.request_image_info()) == Some(true) {
@@ -277,7 +283,7 @@ use keys::ctrl_down;
 pub use keys::{on_key, shift_held, SHORTCUT_GROUPS};
 
 mod pointer;
-use pointer::targets;
+use pointer::{chosen_path, chosen_rows};
 pub use pointer::{on_drag, on_drag_end, on_drop, on_wheel, show_menu};
 mod panels;
 use panels::{ask_rename, open_panel, save_as, settle_file_selection};
